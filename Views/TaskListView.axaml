@@ -1,0 +1,367 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:AriaUI.ViewModels"
+             xmlns:views="using:AriaUI.Views"
+             mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+             x:Class="AriaUI.Views.TaskListView"
+             x:DataType="vm:TaskListViewModel">
+
+    <Grid>
+        <Grid RowDefinitions="Auto,Auto,*" Margin="24,20,24,16">
+            <!-- Top Action Bar -->
+            <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,16">
+                <!-- Left Buttons -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10">
+                    <Button Classes="Primary"
+                            Command="{Binding OpenNewTaskDialogCommand}"
+                            Padding="16,8">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="+" FontWeight="Bold" FontSize="16" VerticalAlignment="Center"/>
+                            <TextBlock Text="新建下载" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Button Command="{Binding ResumeAllCommand}" ToolTip.Tip="全部开始" Padding="12,8">
+                        <TextBlock Text="▶ 全部开始" VerticalAlignment="Center"/>
+                    </Button>
+
+                    <Button Command="{Binding PauseAllCommand}" ToolTip.Tip="全部暂停" Padding="12,8">
+                        <TextBlock Text="⏸ 全部暂停" VerticalAlignment="Center"/>
+                    </Button>
+
+                    <Button Command="{Binding PurgeCompletedCommand}" ToolTip.Tip="清除已完成与已停止记录" Padding="12,8">
+                        <TextBlock Text="🗑 清理记录" VerticalAlignment="Center"/>
+                    </Button>
+                </StackPanel>
+
+                <!-- Search Box -->
+                <TextBox Grid.Column="2"
+                         Width="220"
+                         PlaceholderText="搜索任务名称..."
+                         Text="{Binding SearchText, Mode=TwoWay}"
+                         VerticalAlignment="Center"
+                         CornerRadius="6"/>
+            </Grid>
+
+            <!-- Filter Tabs -->
+            <Border Grid.Row="1"
+                    BorderThickness="0,0,0,1"
+                    BorderBrush="{DynamicResource SemiColorBorder}"
+                    Margin="0,0,0,12"
+                    Padding="0,0,0,8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <!-- Tab 0: All -->
+                    <RadioButton Classes="Tag"
+                                 GroupName="FilterTabs"
+                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=0, Mode=OneWay}"
+                                 Command="{Binding SetFilterCommand}"
+                                 CommandParameter="0"
+                                 Content="全部"
+                                 Margin="0,0,4,0"/>
+
+                    <!-- Tab 1: Active -->
+                    <RadioButton Classes="Tag"
+                                 GroupName="FilterTabs"
+                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=1, Mode=OneWay}"
+                                 Command="{Binding SetFilterCommand}"
+                                 CommandParameter="1"
+                                 Content="{Binding ActiveTaskCount, StringFormat='{}正在下载 ({0})'}"
+                                 Margin="0,0,4,0"/>
+
+                    <!-- Tab 2: Waiting/Paused -->
+                    <RadioButton Classes="Tag"
+                                 GroupName="FilterTabs"
+                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=2, Mode=OneWay}"
+                                 Command="{Binding SetFilterCommand}"
+                                 CommandParameter="2"
+                                 Content="{Binding WaitingTaskCount, StringFormat='{}等待/暂停 ({0})'}"
+                                 Margin="0,0,4,0"/>
+
+                    <!-- Tab 3: Complete -->
+                    <RadioButton Classes="Tag"
+                                 GroupName="FilterTabs"
+                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=3, Mode=OneWay}"
+                                 Command="{Binding SetFilterCommand}"
+                                 CommandParameter="3"
+                                 Content="{Binding CompleteTaskCount, StringFormat='{}已完成 ({0})'}"
+                                 Margin="0,0,4,0"/>
+
+                    <!-- Tab 4: Stopped/Error -->
+                    <RadioButton Classes="Tag"
+                                 GroupName="FilterTabs"
+                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=4, Mode=OneWay}"
+                                 Command="{Binding SetFilterCommand}"
+                                 CommandParameter="4"
+                                 Content="{Binding StoppedTaskCount, StringFormat='{}停止/失败 ({0})'}"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Task List View -->
+            <Grid Grid.Row="2">
+                <!-- Empty Placeholder -->
+                <StackPanel VerticalAlignment="Center"
+                            HorizontalAlignment="Center"
+                            Spacing="12"
+                            IsVisible="{Binding HasNoTasks}">
+                    <TextBlock Text="📥" FontSize="42" HorizontalAlignment="Center" Opacity="0.6"/>
+                    <TextBlock Text="暂无下载任务"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource SemiColorText2}"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="点击上方“新建下载”添加任务链接或种子"
+                               FontSize="13"
+                               Foreground="{DynamicResource SemiColorText3}"
+                               HorizontalAlignment="Center"/>
+                </StackPanel>
+
+                <!-- Tasks Scroll Area -->
+                <ScrollViewer IsVisible="{Binding HasTasks}"
+                              VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding FilteredTasks}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:TaskItemViewModel">
+                                <Border Background="{DynamicResource SemiColorBackground1}"
+                                        BorderBrush="{DynamicResource SemiColorBorder}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Margin="0,0,0,10"
+                                        Padding="16,14">
+                                    <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+                                        <!-- Top Row: File Name and Action Buttons -->
+                                        <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="8">
+                                            <!-- Status Tag -->
+                                            <Border Background="{Binding Status, Converter={StaticResource StatusColorConverter}}"
+                                                    CornerRadius="4"
+                                                    Padding="6,2"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Status, Converter={StaticResource StatusTextConverter}}"
+                                                           FontSize="11"
+                                                           FontWeight="Bold"
+                                                           Foreground="White"/>
+                                            </Border>
+
+                                            <!-- File Name -->
+                                            <TextBlock Text="{Binding Name}"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center"
+                                                       MaxWidth="480"
+                                                       ToolTip.Tip="{Binding Name}"/>
+                                        </StackPanel>
+
+                                        <!-- Right Action Buttons -->
+                                        <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                            <!-- Resume Button -->
+                                            <Button Classes="Tertiary"
+                                                    Command="{Binding ResumeCommand}"
+                                                    IsVisible="{Binding CanResume}"
+                                                    ToolTip.Tip="继续下载"
+                                                    Padding="8,4">
+                                                <TextBlock Text="▶ 继续" FontSize="12"/>
+                                            </Button>
+
+                                            <!-- Pause Button -->
+                                            <Button Classes="Tertiary"
+                                                    Command="{Binding PauseCommand}"
+                                                    IsVisible="{Binding CanPause}"
+                                                    ToolTip.Tip="暂停下载"
+                                                    Padding="8,4">
+                                                <TextBlock Text="⏸ 暂停" FontSize="12"/>
+                                            </Button>
+
+                                            <!-- Open File -->
+                                            <Button Classes="Tertiary"
+                                                    Command="{Binding OpenFileCommand}"
+                                                    IsVisible="{Binding CanOpenFile}"
+                                                    ToolTip.Tip="打开文件"
+                                                    Padding="8,4">
+                                                <TextBlock Text="📄 打开" FontSize="12"/>
+                                            </Button>
+
+                                            <!-- Open Folder -->
+                                            <Button Classes="Tertiary"
+                                                    Command="{Binding OpenFolderCommand}"
+                                                    IsVisible="{Binding CanOpenFolder}"
+                                                    ToolTip.Tip="打开所在文件夹"
+                                                    Padding="8,4">
+                                                <TextBlock Text="📁 目录" FontSize="12"/>
+                                            </Button>
+
+                                            <!-- Delete Button -->
+                                            <Button Classes="Danger"
+                                                    Command="{Binding DeleteCommand}"
+                                                    CommandParameter="false"
+                                                    ToolTip.Tip="移除任务记录"
+                                                    Padding="8,4">
+                                                <TextBlock Text="✕ 删除" FontSize="12"/>
+                                            </Button>
+                                        </StackPanel>
+
+                                        <!-- Middle Row: Progress Bar -->
+                                        <ProgressBar Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                                     Margin="0,10,0,8"
+                                                     Height="6"
+                                                     Minimum="0"
+                                                     Maximum="100"
+                                                     Value="{Binding Progress}"
+                                                     ShowProgressText="False"
+                                                     CornerRadius="3"/>
+
+                                        <!-- Bottom Row: Download Size, Speed, ETA, Error Info -->
+                                        <Grid Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" ColumnDefinitions="Auto,*,Auto">
+                                            <!-- Left Stats -->
+                                            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="16">
+                                                <TextBlock Text="{Binding SizeText}"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource SemiColorText2}"/>
+
+                                                <TextBlock Text="{Binding Progress, StringFormat='{}{0:F1}%'}"
+                                                           FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource SemiColorPrimary}"/>
+
+                                                <StackPanel Orientation="Horizontal" Spacing="4" IsVisible="{Binding IsActive}">
+                                                    <TextBlock Text="↓" FontSize="12" Foreground="{DynamicResource DownloadSpeedBrush}" FontWeight="Bold"/>
+                                                    <TextBlock Text="{Binding SpeedText}"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource SemiColorText1}"/>
+                                                </StackPanel>
+
+                                                <StackPanel Orientation="Horizontal" Spacing="4" IsVisible="{Binding HasUploadSpeed}">
+                                                    <TextBlock Text="↑" FontSize="12" Foreground="{DynamicResource UploadSpeedBrush}" FontWeight="Bold"/>
+                                                    <TextBlock Text="{Binding UploadSpeedText}"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource SemiColorText2}"/>
+                                                </StackPanel>
+                                            </StackPanel>
+
+                                            <!-- Right Stats -->
+                                            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12">
+                                                <TextBlock Text="{Binding EtaText, StringFormat='{}剩余时间: {0}'}"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource SemiColorText3}"
+                                                           IsVisible="{Binding IsActive}"/>
+
+                                                <TextBlock Text="{Binding ConnectionCount, StringFormat='{}连接数: {0}'}"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource SemiColorText3}"
+                                                           IsVisible="{Binding IsActive}"/>
+
+                                                <TextBlock Text="{Binding ErrorMessage, StringFormat='{}错误: {0}'}"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource StatusErrorBrush}"
+                                                           IsVisible="{Binding IsError}"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+
+        <!-- New Task Modal Overlay -->
+        <Border Background="#80000000"
+                IsVisible="{Binding ShowNewTaskDialog}"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch">
+            <Border Background="{DynamicResource SemiColorBackground0}"
+                    BorderBrush="{DynamicResource SemiColorBorder}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    Width="560"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    DataContext="{Binding NewTaskVm}">
+                <Grid RowDefinitions="Auto,Auto,Auto,Auto">
+                    <!-- Modal Header -->
+                    <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,16">
+                        <TextBlock Grid.Column="0" Text="新建下载任务" FontSize="18" FontWeight="Bold"/>
+                        <Button Grid.Column="1"
+                                Classes="Tertiary"
+                                Command="{Binding CancelCommand}"
+                                Content="✕"
+                                Padding="8,4"/>
+                    </Grid>
+
+                    <!-- Type Selector -->
+                    <TabControl Grid.Row="1"
+                                SelectedIndex="{Binding SelectedTabIndex}"
+                                Margin="0,0,0,16">
+                        <!-- Tab 1: URL / Magnet -->
+                        <TabItem Header="链接下载 (URL / 磁力)">
+                            <StackPanel Spacing="12" Margin="0,12,0,0">
+                                <TextBlock Text="下载地址 (支持 HTTP/HTTPS、FTP、Magnet 磁力链接，支持批量多行):"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource SemiColorText2}"/>
+                                <TextBox Text="{Binding Urls, Mode=TwoWay}"
+                                         AcceptsReturn="True"
+                                         Height="100"
+                                         TextWrapping="Wrap"
+                                         PlaceholderText="https://... 或 magnet:?xt=urn:btih:..."/>
+                            </StackPanel>
+                        </TabItem>
+
+                        <!-- Tab 2: Torrent File -->
+                        <TabItem Header="BT 种子 (.torrent)">
+                            <StackPanel Spacing="12" Margin="0,12,0,0">
+                                <TextBlock Text="选择种子文件路径:"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource SemiColorText2}"/>
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBox Grid.Column="0"
+                                             Text="{Binding TorrentPath, Mode=TwoWay}"
+                                             PlaceholderText="请输入或粘贴 .torrent 文件绝对路径"/>
+                                </Grid>
+                            </StackPanel>
+                        </TabItem>
+                    </TabControl>
+
+                    <!-- Common Options -->
+                    <StackPanel Grid.Row="2" Spacing="12" Margin="0,0,0,20">
+                        <Grid ColumnDefinitions="Auto,*">
+                            <TextBlock Grid.Column="0" Text="保存目录:" VerticalAlignment="Center" Width="80"/>
+                            <TextBox Grid.Column="1" Text="{Binding SaveDir, Mode=TwoWay}"/>
+                        </Grid>
+
+                        <Grid ColumnDefinitions="Auto,*">
+                            <TextBlock Grid.Column="0" Text="单任务连接:" VerticalAlignment="Center" Width="80"/>
+                            <NumericUpDown Grid.Column="1"
+                                           Value="{Binding Split}"
+                                           Minimum="1"
+                                           Maximum="64"/>
+                        </Grid>
+
+                        <!-- Error Message -->
+                        <TextBlock Text="{Binding ErrorMessage}"
+                                   Foreground="#ef4444"
+                                   FontSize="12"
+                                   IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                    </StackPanel>
+
+                    <!-- Footer Buttons -->
+                    <StackPanel Grid.Row="3"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Right"
+                                Spacing="12">
+                        <Button Command="{Binding CancelCommand}"
+                                Content="取消"
+                                Padding="16,8"/>
+                        <Button Classes="Primary"
+                                Command="{Binding SubmitCommand}"
+                                Content="立即下载"
+                                IsEnabled="{Binding !IsSubmitting}"
+                                Padding="20,8"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Border>
+    </Grid>
+</UserControl>

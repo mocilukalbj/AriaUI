@@ -1,0 +1,36 @@
+## Build and Binary Output
+bin/
+obj/
+publish/
+out/
+.agents/
+
+## Visual Studio / VS Code / Rider IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.sln.docstates
+*.DotSettings.user
+
+## OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Aria2 Runtime Files
+aria2.session
+aria2.pid
+dht.dat
+config.json
+
+## Logs
+*.log
+logs/
+
+## Test / Temporary files
+*.tmp
+*.bak

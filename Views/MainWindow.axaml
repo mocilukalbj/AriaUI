@@ -1,0 +1,166 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:AriaUI.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="1080" d:DesignHeight="680"
+        x:Class="AriaUI.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="AriaUI - 跨平台下载管理器"
+        Width="1080"
+        Height="680"
+        MinWidth="840"
+        MinHeight="520"
+        WindowStartupLocation="CenterScreen">
+
+    <Grid ColumnDefinitions="220,*" Background="{DynamicResource SemiColorBackground0}">
+        <!-- Left Sidebar Navigation -->
+        <Border Grid.Column="0"
+                Background="{DynamicResource SemiColorBackground1}"
+                BorderBrush="{DynamicResource SemiColorBorder}"
+                BorderThickness="0,0,1,0">
+            <Grid RowDefinitions="Auto,*,Auto">
+                <!-- App Header -->
+                <StackPanel Grid.Row="0" Margin="20,24,20,20" Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Border Background="{DynamicResource SemiColorPrimary}"
+                                CornerRadius="8"
+                                Width="32"
+                                Height="32">
+                            <TextBlock Text="⚡"
+                                       FontSize="18"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"/>
+                        </Border>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="AriaUI" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Text="Aria2 GUI Client" FontSize="11" Foreground="{DynamicResource SemiColorText3}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Navigation Menu -->
+                <StackPanel Grid.Row="1" Margin="12,0,12,0" Spacing="6">
+                    <!-- Tasks Tab -->
+                    <Button Classes="Tertiary"
+                            Command="{Binding NavigateToTasksCommand}"
+                            HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Left"
+                            Padding="12,10"
+                            CornerRadius="6">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                            <TextBlock Grid.Column="0" Text="📥" FontSize="16" Margin="0,0,10,0"/>
+                            <TextBlock Grid.Column="1" Text="任务管理" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <Border Grid.Column="2"
+                                    Background="{DynamicResource SemiColorPrimary}"
+                                    CornerRadius="10"
+                                    Padding="6,1"
+                                    IsVisible="{Binding HasActiveTasks}">
+                                <TextBlock Text="{Binding TaskListVm.ActiveTaskCount}"
+                                           FontSize="10"
+                                           FontWeight="Bold"
+                                           Foreground="White"/>
+                            </Border>
+                        </Grid>
+                    </Button>
+
+                    <!-- Settings Tab -->
+                    <Button Classes="Tertiary"
+                            Command="{Binding NavigateToSettingsCommand}"
+                            HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Left"
+                            Padding="12,10"
+                            CornerRadius="6">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="⚙" FontSize="16"/>
+                            <TextBlock Text="设置中心" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+
+                <!-- Sidebar Footer: Status & Engine -->
+                <Border Grid.Row="2"
+                        BorderBrush="{DynamicResource SemiColorBorder}"
+                        BorderThickness="0,1,0,0"
+                        Padding="16,14">
+                    <StackPanel Spacing="6">
+                        <!-- Connection Status Dot -->
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Ellipse Width="8" Height="8"
+                                     Fill="{Binding IsConnected, Converter={StaticResource ConnectionBrushConverter}}"/>
+                            <TextBlock Text="{Binding ConnectionStatusText}"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource SemiColorText2}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- Main Content & Bottom Global Status Bar -->
+        <Grid Grid.Column="1" RowDefinitions="*,Auto">
+            <!-- Content Host -->
+            <ContentControl Grid.Row="0" Content="{Binding CurrentView}"/>
+
+            <!-- Bottom Global Status Bar -->
+            <Border Grid.Row="1"
+                    Background="{DynamicResource SemiColorBackground1}"
+                    BorderBrush="{DynamicResource SemiColorBorder}"
+                    BorderThickness="0,1,0,0"
+                    Padding="20,10">
+                <Grid ColumnDefinitions="Auto,*,Auto">
+                    <!-- Left: Download & Upload Speed -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="20">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="↓" FontWeight="Bold" Foreground="{DynamicResource DownloadSpeedBrush}" FontSize="13"/>
+                            <TextBlock Text="{Binding DownloadSpeedText}"
+                                       FontWeight="SemiBold"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource SemiColorText1}"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="↑" FontWeight="Bold" Foreground="{DynamicResource UploadSpeedBrush}" FontSize="13"/>
+                            <TextBlock Text="{Binding UploadSpeedText}"
+                                       FontWeight="SemiBold"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource SemiColorText2}"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- Right: Active Tasks Count -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="16">
+                        <TextBlock Text="{Binding TaskListVm.ActiveTaskCount, StringFormat='{}下载中: {0}'}"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource SemiColorText2}"/>
+                        <TextBlock Text="{Binding TaskListVm.CompleteTaskCount, StringFormat='{}已完成: {0}'}"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource SemiColorText3}"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Toast Notification Overlay -->
+            <Border Grid.Row="0"
+                    IsVisible="{Binding ShowToast}"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Margin="0,20,24,0"
+                    Background="{DynamicResource SemiColorBackground0}"
+                    BorderBrush="{DynamicResource SemiColorPrimary}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16,10"
+                    BoxShadow="0 4 12 0 #33000000">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="🔔" FontSize="14" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding ToastMessage}"
+                               FontWeight="SemiBold"
+                               FontSize="13"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

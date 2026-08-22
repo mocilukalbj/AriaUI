@@ -1,0 +1,34 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:semi="https://irihi.tech/semi"
+             x:Class="AriaUI.App"
+             xmlns:local="using:AriaUI"
+             xmlns:converters="using:AriaUI.Converters"
+             RequestedThemeVariant="Default">
+
+    <Application.DataTemplates>
+        <local:ViewLocator />
+    </Application.DataTemplates>
+
+    <Application.Resources>
+        <converters:SizeConverter x:Key="SizeConverter" />
+        <converters:SpeedConverter x:Key="SpeedConverter" />
+        <converters:StatusColorConverter x:Key="StatusColorConverter" />
+        <converters:ConnectionBrushConverter x:Key="ConnectionBrushConverter" />
+        <converters:StatusTextConverter x:Key="StatusTextConverter" />
+
+        <!-- Status & Speed Brushes -->
+        <SolidColorBrush x:Key="StatusActiveBrush" Color="#22c55e" />
+        <SolidColorBrush x:Key="StatusWaitingBrush" Color="#eab308" />
+        <SolidColorBrush x:Key="StatusPausedBrush" Color="#f97316" />
+        <SolidColorBrush x:Key="StatusCompleteBrush" Color="#3b82f6" />
+        <SolidColorBrush x:Key="StatusErrorBrush" Color="#ef4444" />
+        <SolidColorBrush x:Key="StatusUnknownBrush" Color="#9ca3af" />
+        <SolidColorBrush x:Key="DownloadSpeedBrush" Color="#22c55e" />
+        <SolidColorBrush x:Key="UploadSpeedBrush" Color="#3b82f6" />
+    </Application.Resources>
+
+    <Application.Styles>
+        <semi:SemiTheme Locale="zh-CN" />
+    </Application.Styles>
+</Application>
