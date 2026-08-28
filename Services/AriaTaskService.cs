@@ -10,7 +10,7 @@ using AriaUI.Models;
 
 namespace AriaUI.Services;
 
-public interface IAriaTaskService
+public interface IAriaTaskService : IDisposable
 {
     bool IsConnected { get; }
     AriaGlobalStat GlobalStat { get; }
@@ -44,8 +44,15 @@ public class AriaTaskService : IAriaTaskService
     private readonly ISettingsService _settingsService;
     private readonly ITrackerService _trackerService;
     private readonly IFileSystemService _fileSystemService;
-    private readonly Timer _pollTimer;
+    private readonly object _taskLock = new();
+    private PeriodicTimer? _periodicTimer;
+    private CancellationTokenSource? _pollCts;
+    private Task? _pollTask;
     private int _isPolling;
+
+    private List<AriaTaskInfo> _activeTasks = new();
+    private List<AriaTaskInfo> _waitingTasks = new();
+    private List<AriaTaskInfo> _stoppedTasks = new();
 
     public bool IsConnected => _rpcClient.IsConnected;
     public AriaGlobalStat GlobalStat { get; private set; } = new();
@@ -54,9 +61,23 @@ public class AriaTaskService : IAriaTaskService
     public event EventHandler? GlobalStatUpdated;
     public event EventHandler<string>? NotificationReceived;
 
-    public List<AriaTaskInfo> ActiveTasks { get; private set; } = new();
-    public List<AriaTaskInfo> WaitingTasks { get; private set; } = new();
-    public List<AriaTaskInfo> StoppedTasks { get; private set; } = new();
+    public List<AriaTaskInfo> ActiveTasks
+    {
+        get { lock (_taskLock) return _activeTasks.ToList(); }
+        private set { lock (_taskLock) _activeTasks = value; }
+    }
+
+    public List<AriaTaskInfo> WaitingTasks
+    {
+        get { lock (_taskLock) return _waitingTasks.ToList(); }
+        private set { lock (_taskLock) _waitingTasks = value; }
+    }
+
+    public List<AriaTaskInfo> StoppedTasks
+    {
+        get { lock (_taskLock) return _stoppedTasks.ToList(); }
+        private set { lock (_taskLock) _stoppedTasks = value; }
+    }
 
     public AriaTaskService(
         IAriaProcessService processService,
@@ -86,8 +107,6 @@ public class AriaTaskService : IAriaTaskService
             WeakReferenceMessenger.Default.Send(new NotificationMessage(msg, IsError: true));
             RefreshTasksAsync().SafeFireAndForget();
         };
-
-        _pollTimer = new Timer(async _ => await PollLoopAsync(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
     public async Task InitializeAsync()
@@ -113,7 +132,33 @@ public class AriaTaskService : IAriaTaskService
             Console.Error.WriteLine($"[AriaTaskService] Initial RPC connection error: {ex.Message}");
         }
 
-        _pollTimer.Change(TimeSpan.Zero, TimeSpan.FromSeconds(1));
+        _pollCts = new CancellationTokenSource();
+        _periodicTimer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        _pollTask = Task.Run(() => RunPeriodicPollingAsync(_pollCts.Token));
+    }
+
+    private async Task RunPeriodicPollingAsync(CancellationToken ct)
+    {
+        await PollLoopAsync();
+
+        while (!ct.IsCancellationRequested && _periodicTimer != null)
+        {
+            try
+            {
+                if (await _periodicTimer.WaitForNextTickAsync(ct))
+                {
+                    await PollLoopAsync();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[AriaTaskService] Polling loop exception: {ex.Message}");
+            }
+        }
     }
 
     private async Task PollLoopAsync()
@@ -293,16 +338,40 @@ public class AriaTaskService : IAriaTaskService
 
         if (deleteFile && taskInfo?.Files != null)
         {
+            var defaultDir = _settingsService.Settings.DefaultDownloadDir;
+            string? safeRoot = !string.IsNullOrWhiteSpace(defaultDir) ? Path.GetFullPath(defaultDir) : null;
+
             foreach (var file in taskInfo.Files)
             {
                 if (!string.IsNullOrWhiteSpace(file.Path) && File.Exists(file.Path))
                 {
-                    try { File.Delete(file.Path); } catch { }
-                }
-                var aria2File = file.Path + ".aria2";
-                if (File.Exists(aria2File))
-                {
-                    try { File.Delete(aria2File); } catch { }
+                    try
+                    {
+                        var fullPath = Path.GetFullPath(file.Path);
+                        if (safeRoot != null)
+                        {
+                            var safePrefix = safeRoot.EndsWith(Path.DirectorySeparatorChar)
+                                ? safeRoot
+                                : safeRoot + Path.DirectorySeparatorChar;
+
+                            if (!fullPath.StartsWith(safePrefix, StringComparison.OrdinalIgnoreCase) && !fullPath.Equals(safeRoot, StringComparison.OrdinalIgnoreCase))
+                            {
+                                Console.Error.WriteLine($"[AriaTaskService] Skipping deletion of file outside download directory: {fullPath}");
+                                continue;
+                            }
+                        }
+
+                        File.Delete(fullPath);
+                        var aria2File = fullPath + ".aria2";
+                        if (File.Exists(aria2File))
+                        {
+                            File.Delete(aria2File);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"[AriaTaskService] Failed to delete file {file.Path}: {ex.Message}");
+                    }
                 }
             }
         }
@@ -376,4 +445,18 @@ public class AriaTaskService : IAriaTaskService
     public void OpenFile(string filePath) => _fileSystemService.OpenFile(filePath);
 
     public void OpenDirectory(string directoryPath) => _fileSystemService.OpenDirectory(directoryPath);
+
+    public void Dispose()
+    {
+        try
+        {
+            _pollCts?.Cancel();
+        }
+        catch { }
+
+        _periodicTimer?.Dispose();
+        _periodicTimer = null;
+        _pollCts?.Dispose();
+        _pollCts = null;
+    }
 }

@@ -53,3 +53,18 @@ public class RpcError
     [JsonPropertyName("message")]
     public string Message { get; set; } = string.Empty;
 }
+
+[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSerializable(typeof(AppSettings))]
+[JsonSerializable(typeof(RpcRequest))]
+[JsonSerializable(typeof(RpcError))]
+[JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(List<AriaTaskInfo>))]
+[JsonSerializable(typeof(AriaTaskInfo))]
+[JsonSerializable(typeof(AriaGlobalStat))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSerializable(typeof(Dictionary<string, object>))]
+[JsonSerializable(typeof(string[]))]
+public partial class AriaJsonContext : JsonSerializerContext
+{
+}

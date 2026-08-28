@@ -73,7 +73,10 @@ public class AriaWebSocketRpcClient : IAriaRpcClient
 
         _cts = new CancellationTokenSource();
         _webSocket = new ClientWebSocket();
-        var uri = new Uri($"ws://{host}:{port}/jsonrpc");
+
+        var scheme = (port == 443) ? "wss" : "ws";
+        var formattedHost = host.Contains(':') && !host.StartsWith("[") && !host.EndsWith("]") ? $"[{host}]" : host;
+        var uri = new Uri($"{scheme}://{formattedHost}:{port}/jsonrpc");
 
         try
         {
@@ -138,10 +141,13 @@ public class AriaWebSocketRpcClient : IAriaRpcClient
                     result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        await DisconnectAsync();
                         return;
                     }
                     ms.Write(buffer, 0, result.Count);
+                    if (ms.Length > 8 * 1024 * 1024)
+                    {
+                        throw new InvalidOperationException("WebSocket message exceeded maximum allowed size (8MB).");
+                    }
                 } while (!result.EndOfMessage);
 
                 var messageJson = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
@@ -172,7 +178,15 @@ public class AriaWebSocketRpcClient : IAriaRpcClient
                 {
                     if (root.TryGetProperty("error", out var errorProp) && errorProp.ValueKind == JsonValueKind.Object)
                     {
-                        var msg = errorProp.GetProperty("message").GetString() ?? "RPC error";
+                        string msg = "RPC error";
+                        if (errorProp.TryGetProperty("message", out var msgProp) && msgProp.ValueKind == JsonValueKind.String)
+                        {
+                            msg = msgProp.GetString() ?? "RPC error";
+                        }
+                        else
+                        {
+                            msg = errorProp.GetRawText();
+                        }
                         tcs.TrySetException(new Exception(msg));
                     }
                     else if (root.TryGetProperty("result", out var resultProp))
@@ -250,20 +264,34 @@ public class AriaWebSocketRpcClient : IAriaRpcClient
         var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pendingRequests[reqId] = tcs;
 
-        var json = JsonSerializer.Serialize(rpcReq);
-        var bytes = Encoding.UTF8.GetBytes(json);
-
-        await _webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        using (cts.Token.Register(() => tcs.TrySetCanceled()))
+        try
         {
-            var resultElement = await tcs.Task;
-            if (resultElement.ValueKind == JsonValueKind.Undefined || resultElement.ValueKind == JsonValueKind.Null)
+            var json = JsonSerializer.Serialize(rpcReq, AriaJsonContext.Default.RpcRequest);
+            var bytes = Encoding.UTF8.GetBytes(json);
+
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await _webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, timeoutCts.Token);
+
+            using (timeoutCts.Token.Register(() => tcs.TrySetCanceled()))
             {
-                return default;
+                var resultElement = await tcs.Task;
+                if (resultElement.ValueKind == JsonValueKind.Undefined || resultElement.ValueKind == JsonValueKind.Null)
+                {
+                    return default;
+                }
+
+                var typeInfo = AriaJsonContext.Default.GetTypeInfo(typeof(T));
+                if (typeInfo != null)
+                {
+                    return (T?)JsonSerializer.Deserialize(resultElement.GetRawText(), typeInfo);
+                }
+
+                return JsonSerializer.Deserialize<T>(resultElement.GetRawText());
             }
-            return JsonSerializer.Deserialize<T>(resultElement.GetRawText());
+        }
+        finally
+        {
+            _pendingRequests.TryRemove(reqId, out _);
         }
     }
 

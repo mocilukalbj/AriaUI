@@ -46,17 +46,24 @@ public class StatusColorConverter : IValueConverter
 {
     public static readonly StatusColorConverter Instance = new();
 
+    private static readonly SolidColorBrush ActiveBrush = new(Color.Parse("#22c55e"));
+    private static readonly SolidColorBrush WaitingBrush = new(Color.Parse("#eab308"));
+    private static readonly SolidColorBrush PausedBrush = new(Color.Parse("#f97316"));
+    private static readonly SolidColorBrush CompleteBrush = new(Color.Parse("#3b82f6"));
+    private static readonly SolidColorBrush ErrorBrush = new(Color.Parse("#ef4444"));
+    private static readonly SolidColorBrush DefaultBrush = new(Color.Parse("#9ca3af"));
+
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
         var status = value?.ToString()?.ToLowerInvariant();
         return status switch
         {
-            "active" => new SolidColorBrush(Color.Parse("#22c55e")),    // Green
-            "waiting" => new SolidColorBrush(Color.Parse("#eab308")),   // Yellow
-            "paused" => new SolidColorBrush(Color.Parse("#f97316")),    // Orange
-            "complete" => new SolidColorBrush(Color.Parse("#3b82f6")),  // Blue
-            "error" => new SolidColorBrush(Color.Parse("#ef4444")),     // Red
-            _ => new SolidColorBrush(Color.Parse("#9ca3af"))            // Gray
+            "active" => ActiveBrush,
+            "waiting" => WaitingBrush,
+            "paused" => PausedBrush,
+            "complete" => CompleteBrush,
+            "error" => ErrorBrush,
+            _ => DefaultBrush
         };
     }
 
@@ -67,13 +74,16 @@ public class ConnectionBrushConverter : IValueConverter
 {
     public static readonly ConnectionBrushConverter Instance = new();
 
+    private static readonly SolidColorBrush ConnectedBrush = new(Color.Parse("#22c55e"));
+    private static readonly SolidColorBrush DisconnectedBrush = new(Color.Parse("#ef4444"));
+
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
         if (value is bool isConnected && isConnected)
         {
-            return new SolidColorBrush(Color.Parse("#22c55e")); // Connected Green
+            return ConnectedBrush;
         }
-        return new SolidColorBrush(Color.Parse("#ef4444")); // Disconnected Red
+        return DisconnectedBrush;
     }
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
@@ -96,6 +106,57 @@ public class StatusTextConverter : IValueConverter
             "removed" => "已取消",
             _ => status ?? "未知"
         };
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+}
+
+public class StatusAlertBackgroundConverter : IValueConverter
+{
+    public static readonly StatusAlertBackgroundConverter Instance = new();
+
+    private static readonly SolidColorBrush DangerBg = new(Color.Parse("#fee2e2"));
+    private static readonly SolidColorBrush SuccessBg = new(Color.Parse("#dcfce7"));
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is bool isError && isError)
+            return DangerBg;
+        return SuccessBg;
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+}
+
+public class StatusAlertBorderBrushConverter : IValueConverter
+{
+    public static readonly StatusAlertBorderBrushConverter Instance = new();
+
+    private static readonly SolidColorBrush DangerBorder = new(Color.Parse("#ef4444"));
+    private static readonly SolidColorBrush SuccessBorder = new(Color.Parse("#22c55e"));
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is bool isError && isError)
+            return DangerBorder;
+        return SuccessBorder;
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+}
+
+public class StatusAlertForegroundConverter : IValueConverter
+{
+    public static readonly StatusAlertForegroundConverter Instance = new();
+
+    private static readonly SolidColorBrush DangerText = new(Color.Parse("#991b1b"));
+    private static readonly SolidColorBrush SuccessText = new(Color.Parse("#166534"));
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is bool isError && isError)
+            return DangerText;
+        return SuccessText;
     }
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();

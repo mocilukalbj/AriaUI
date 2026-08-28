@@ -15,15 +15,19 @@ public class FileSystemService : IFileSystemService
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
-                Process.Start("xdg-open", $"\"{filePath}\"");
+                var psi = new ProcessStartInfo("xdg-open") { UseShellExecute = false };
+                psi.ArgumentList.Add(filePath);
+                using var p = Process.Start(psi);
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                Process.Start(new ProcessStartInfo(filePath) { UseShellExecute = true });
+                using var p = Process.Start(new ProcessStartInfo(filePath) { UseShellExecute = true });
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
-                Process.Start("open", $"\"{filePath}\"");
+                var psi = new ProcessStartInfo("open") { UseShellExecute = false };
+                psi.ArgumentList.Add(filePath);
+                using var p = Process.Start(psi);
             }
         }
         catch (Exception ex)
@@ -47,15 +51,21 @@ public class FileSystemService : IFileSystemService
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
-                Process.Start("xdg-open", $"\"{directoryPath}\"");
+                var psi = new ProcessStartInfo("xdg-open") { UseShellExecute = false };
+                psi.ArgumentList.Add(directoryPath);
+                using var p = Process.Start(psi);
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{directoryPath}\"") { UseShellExecute = true });
+                var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+                psi.ArgumentList.Add(directoryPath);
+                using var p = Process.Start(psi);
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
-                Process.Start("open", $"\"{directoryPath}\"");
+                var psi = new ProcessStartInfo("open") { UseShellExecute = false };
+                psi.ArgumentList.Add(directoryPath);
+                using var p = Process.Start(psi);
             }
         }
         catch (Exception ex)

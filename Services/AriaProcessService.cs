@@ -29,7 +29,12 @@ public class AriaProcessService : IAriaProcessService
 
     public AriaProcessService()
     {
-        var configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "AriaUI");
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (string.IsNullOrWhiteSpace(appData))
+        {
+            appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
+        }
+        var configDir = Path.Combine(appData, "AriaUI");
         Directory.CreateDirectory(configDir);
         _sessionFilePath = Path.Combine(configDir, "aria2.session");
         _dhtFilePath = Path.Combine(configDir, "dht.dat");
@@ -42,7 +47,11 @@ public class AriaProcessService : IAriaProcessService
 
         AppDomain.CurrentDomain.ProcessExit += (s, e) =>
         {
-            StopDaemonAsync().GetAwaiter().GetResult();
+            try
+            {
+                _process?.Kill(true);
+            }
+            catch { }
         };
     }
 
@@ -105,7 +114,7 @@ public class AriaProcessService : IAriaProcessService
         }
     }
 
-    private async Task<bool> IsPortInUseAsync(int port, CancellationToken cancellationToken = default)
+    private async Task<bool> IsPortInUseAsync(string host, int port, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -113,7 +122,8 @@ public class AriaProcessService : IAriaProcessService
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-            await client.ConnectAsync("127.0.0.1", port, linkedCts.Token);
+            var connectHost = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host;
+            await client.ConnectAsync(connectHost, port, linkedCts.Token);
             return client.Connected;
         }
         catch
@@ -130,7 +140,7 @@ public class AriaProcessService : IAriaProcessService
         }
 
         // If port is already in use (e.g. external standalone daemon or existing session), connect to it
-        if (await IsPortInUseAsync(settings.RpcPort, cancellationToken))
+        if (await IsPortInUseAsync(settings.RpcHost, settings.RpcPort, cancellationToken))
         {
             Console.WriteLine($"[AriaProcessService] Port {settings.RpcPort} is already in use, connecting to existing instance.");
             return true;
@@ -148,29 +158,45 @@ public class AriaProcessService : IAriaProcessService
 
         try
         {
-            var args = new List<string>
+            var startInfo = new ProcessStartInfo
             {
-                "--enable-rpc=true",
-                "--rpc-allow-origin-all=true",
-                "--rpc-listen-all=false",
-                $"--rpc-listen-port={settings.RpcPort}",
-                $"--rpc-secret={settings.RpcSecret}",
-                $"--dir=\"{settings.DefaultDownloadDir}\"",
-                $"--max-concurrent-downloads={settings.MaxConcurrentDownloads}",
-                $"--max-connection-per-server={settings.MaxConnectionPerServer}",
-                $"--split={settings.Split}",
-                "--enable-dht=true",
-                "--enable-peer-exchange=true",
-                "--bt-enable-lpd=true",
-                $"--dht-file-path=\"{_dhtFilePath}\"",
-                $"--save-session=\"{_sessionFilePath}\"",
-                "--save-session-interval=30",
-                "--check-certificate=false"
+                FileName = ExecutablePath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
             };
+
+            startInfo.ArgumentList.Add("--enable-rpc=true");
+            startInfo.ArgumentList.Add("--rpc-allow-origin-all=true");
+            startInfo.ArgumentList.Add("--rpc-listen-all=false");
+            startInfo.ArgumentList.Add($"--rpc-listen-port={settings.RpcPort}");
+            if (!string.IsNullOrEmpty(settings.RpcSecret))
+            {
+                startInfo.ArgumentList.Add($"--rpc-secret={settings.RpcSecret}");
+            }
+            if (!string.IsNullOrEmpty(settings.DefaultDownloadDir))
+            {
+                startInfo.ArgumentList.Add($"--dir={settings.DefaultDownloadDir}");
+            }
+            startInfo.ArgumentList.Add($"--max-concurrent-downloads={settings.MaxConcurrentDownloads}");
+            startInfo.ArgumentList.Add($"--max-connection-per-server={settings.MaxConnectionPerServer}");
+            startInfo.ArgumentList.Add($"--split={settings.Split}");
+            startInfo.ArgumentList.Add("--enable-dht=true");
+            startInfo.ArgumentList.Add("--enable-peer-exchange=true");
+            startInfo.ArgumentList.Add("--bt-enable-lpd=true");
+            startInfo.ArgumentList.Add($"--dht-file-path={_dhtFilePath}");
+            startInfo.ArgumentList.Add($"--save-session={_sessionFilePath}");
+            startInfo.ArgumentList.Add("--save-session-interval=30");
+
+            if (settings.AllowInvalidCert)
+            {
+                startInfo.ArgumentList.Add("--check-certificate=false");
+            }
 
             if (File.Exists(_sessionFilePath) && new FileInfo(_sessionFilePath).Length > 0)
             {
-                args.Add($"--input-file=\"{_sessionFilePath}\"");
+                startInfo.ArgumentList.Add($"--input-file={_sessionFilePath}");
             }
 
             if (settings.EnableBtTrackers && !string.IsNullOrWhiteSpace(settings.ExtraTrackers))
@@ -181,19 +207,9 @@ public class AriaProcessService : IAriaProcessService
                     .Trim(',');
                 if (!string.IsNullOrWhiteSpace(formattedTrackers))
                 {
-                    args.Add($"--bt-tracker=\"{formattedTrackers}\"");
+                    startInfo.ArgumentList.Add($"--bt-tracker={formattedTrackers}");
                 }
             }
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = ExecutablePath,
-                Arguments = string.Join(" ", args),
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
 
             // Ensure LD_LIBRARY_PATH contains ~/.local/lib
             var localLib = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "lib");
@@ -228,7 +244,7 @@ public class AriaProcessService : IAriaProcessService
             // Asynchronously wait for RPC port to become ready (up to 3 seconds)
             for (int i = 0; i < 15; i++)
             {
-                if (await IsPortInUseAsync(settings.RpcPort, cancellationToken))
+                if (await IsPortInUseAsync(settings.RpcHost, settings.RpcPort, cancellationToken))
                 {
                     return true;
                 }

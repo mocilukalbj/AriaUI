@@ -59,6 +59,9 @@ public partial class SettingsViewModel : ViewModelBase
     private string _extraTrackers = string.Empty;
 
     [ObservableProperty]
+    private bool _allowInvalidCert;
+
+    [ObservableProperty]
     private string _themeMode = "System";
 
     [ObservableProperty]
@@ -103,6 +106,7 @@ public partial class SettingsViewModel : ViewModelBase
         EnableBtTrackers = s.EnableBtTrackers;
         CustomTrackersUrl = s.CustomTrackersUrl;
         ExtraTrackers = s.ExtraTrackers;
+        AllowInvalidCert = s.AllowInvalidCert;
         ThemeMode = s.ThemeMode;
     }
 
@@ -130,6 +134,7 @@ public partial class SettingsViewModel : ViewModelBase
                 EnableBtTrackers = EnableBtTrackers,
                 CustomTrackersUrl = CustomTrackersUrl,
                 ExtraTrackers = ExtraTrackers,
+                AllowInvalidCert = AllowInvalidCert,
                 ThemeMode = ThemeMode
             };
 

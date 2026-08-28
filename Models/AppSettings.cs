@@ -6,7 +6,7 @@ public class AppSettings
     public string Aria2ExecutablePath { get; set; } = string.Empty;
     public string RpcHost { get; set; } = "127.0.0.1";
     public int RpcPort { get; set; } = 6800;
-    public string RpcSecret { get; set; } = "ariaui_secret_token";
+    public string RpcSecret { get; set; } = string.Empty;
     public string DefaultDownloadDir { get; set; } = string.Empty;
     public int MaxConcurrentDownloads { get; set; } = 5;
     public int MaxConnectionPerServer { get; set; } = 16;
@@ -16,6 +16,7 @@ public class AppSettings
     public bool EnableBtTrackers { get; set; } = true;
     public string CustomTrackersUrl { get; set; } = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt";
     public string ExtraTrackers { get; set; } = string.Empty;
+    public bool AllowInvalidCert { get; set; } = false;
     public string ThemeMode { get; set; } = "System"; // System, Dark, Light
 
     public List<string> Validate()
@@ -43,6 +44,9 @@ public class AppSettings
         if (MaxOverallUploadLimit < 0)
             errors.Add("上传限速不能为负数");
 
+        if (!string.IsNullOrEmpty(DefaultDownloadDir) && (DefaultDownloadDir.Contains('"') || DefaultDownloadDir.Contains(';') || DefaultDownloadDir.Contains('&')))
+            errors.Add("下载目录不能包含引号、分号或与号等特殊字符");
+
         return errors;
     }
 
@@ -64,6 +68,7 @@ public class AppSettings
             EnableBtTrackers = EnableBtTrackers,
             CustomTrackersUrl = CustomTrackersUrl,
             ExtraTrackers = ExtraTrackers,
+            AllowInvalidCert = AllowInvalidCert,
             ThemeMode = ThemeMode
         };
     }

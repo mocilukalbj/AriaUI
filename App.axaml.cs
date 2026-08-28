@@ -1,4 +1,5 @@
 using System;
+using System.Net.Http;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -28,6 +29,7 @@ public partial class App : Application
         var collection = new ServiceCollection();
 
         // Register Core Services
+        collection.AddSingleton(new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
         collection.AddSingleton<ISettingsService, SettingsService>();
         collection.AddSingleton<IFileSystemService, FileSystemService>();
         collection.AddSingleton<ITrackerService, TrackerService>();
@@ -78,6 +80,9 @@ public partial class App : Application
             {
                 try
                 {
+                    var taskServiceInstance = Services.GetService<IAriaTaskService>();
+                    taskServiceInstance?.Dispose();
+
                     var processService = Services.GetService<IAriaProcessService>();
                     processService?.StopDaemonAsync().GetAwaiter().GetResult();
 

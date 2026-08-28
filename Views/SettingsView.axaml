@@ -3,6 +3,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="using:AriaUI.ViewModels"
+             xmlns:conv="using:AriaUI.Converters"
              mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="750"
              x:Class="AriaUI.Views.SettingsView"
              x:DataType="vm:SettingsViewModel">
@@ -18,14 +19,14 @@
             </StackPanel>
 
             <!-- Status Alert if any -->
-            <Border Background="{DynamicResource SemiColorSuccessLight}"
-                    BorderBrush="{DynamicResource SemiColorSuccess}"
+            <Border Background="{Binding IsStatusError, Converter={x:Static conv:StatusAlertBackgroundConverter.Instance}}"
+                    BorderBrush="{Binding IsStatusError, Converter={x:Static conv:StatusAlertBorderBrushConverter.Instance}}"
                     BorderThickness="1"
                     CornerRadius="6"
                     Padding="12,8"
                     IsVisible="{Binding StatusMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
                 <TextBlock Text="{Binding StatusMessage}"
-                           Foreground="{DynamicResource SemiColorSuccessText}"
+                           Foreground="{Binding IsStatusError, Converter={x:Static conv:StatusAlertForegroundConverter.Instance}}"
                            FontWeight="SemiBold"/>
             </Border>
 
@@ -61,6 +62,9 @@
                     <CheckBox IsChecked="{Binding AutoStartDaemon}"
                               Content="自动管理并启动本地 aria2c 守护进程"/>
 
+                    <CheckBox IsChecked="{Binding AllowInvalidCert}"
+                              Content="允许非安全 TLS 证书 (--check-certificate=false)"/>
+
                     <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto,Auto" Margin="0,4,0,0">
                         <!-- Custom Executable Path -->
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="aria2c 路径:" VerticalAlignment="Center"/>
@@ -79,6 +83,7 @@
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="RPC 端口:" VerticalAlignment="Center"/>
                         <NumericUpDown Grid.Row="2" Grid.Column="1"
                                        Value="{Binding RpcPort}"
+                                       FormatString="0"
                                        Minimum="1024"
                                        Maximum="65535"
                                        Margin="0,0,0,10"/>
@@ -113,6 +118,7 @@
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="最大并行任务数:" VerticalAlignment="Center"/>
                         <NumericUpDown Grid.Row="1" Grid.Column="1"
                                        Value="{Binding MaxConcurrentDownloads}"
+                                       FormatString="0"
                                        Minimum="1"
                                        Maximum="64"
                                        Margin="0,0,0,10"/>
@@ -121,6 +127,7 @@
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="单任务最大连接数:" VerticalAlignment="Center"/>
                         <NumericUpDown Grid.Row="2" Grid.Column="1"
                                        Value="{Binding MaxConnectionPerServer}"
+                                       FormatString="0"
                                        Minimum="1"
                                        Maximum="64"
                                        Margin="0,0,0,10"/>
@@ -129,6 +136,7 @@
                         <TextBlock Grid.Row="3" Grid.Column="0" Text="全局下载限速 (KB/s):" VerticalAlignment="Center"/>
                         <NumericUpDown Grid.Row="3" Grid.Column="1"
                                        Value="{Binding DownloadLimitKB}"
+                                       FormatString="0"
                                        Minimum="0"
                                        Margin="0,0,0,10"/>
 
@@ -136,6 +144,7 @@
                         <TextBlock Grid.Row="4" Grid.Column="0" Text="全局上传限速 (KB/s):" VerticalAlignment="Center"/>
                         <NumericUpDown Grid.Row="4" Grid.Column="1"
                                        Value="{Binding UploadLimitKB}"
+                                       FormatString="0"
                                        Minimum="0"/>
                     </Grid>
                 </StackPanel>
