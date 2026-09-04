@@ -6,23 +6,18 @@ namespace AriaUI.Helpers;
 
 public static class TaskNameResolver
 {
-    public static string Resolve(AriaTaskInfo task)
+    public static string Resolve(AriaTaskInfo? task)
     {
-        try
-        {
-            var btName = TryGetBtName(task);
-            if (!string.IsNullOrWhiteSpace(btName)) return btName;
+        if (task is null) return "Unknown Download";
 
-            var fileName = TryGetFileName(task);
-            if (!string.IsNullOrWhiteSpace(fileName)) return fileName;
+        var btName = TryGetBtName(task);
+        if (!string.IsNullOrWhiteSpace(btName)) return btName;
 
-            var uriName = TryGetUriName(task);
-            if (!string.IsNullOrWhiteSpace(uriName)) return uriName;
-        }
-        catch
-        {
-            // Fallback gracefully on any parse failure
-        }
+        var fileName = TryGetFileName(task);
+        if (!string.IsNullOrWhiteSpace(fileName)) return fileName;
+
+        var uriName = TryGetUriName(task);
+        if (!string.IsNullOrWhiteSpace(uriName)) return uriName;
 
         return !string.IsNullOrEmpty(task.Gid) ? $"Task-{task.Gid}" : "Unknown Download";
     }
@@ -54,10 +49,14 @@ public static class TaskNameResolver
 
         if (Uri.TryCreate(uriStr, UriKind.Absolute, out var uri))
         {
-            var fn = Path.GetFileName(uri.LocalPath);
+            var fn = Path.GetFileName(uri.LocalPath.TrimEnd('/'));
             if (!string.IsNullOrWhiteSpace(fn)) return fn;
+
+            // Strip query parameters and fragment to prevent leaking sensitive tokens/auth
+            return $"{uri.Scheme}://{uri.Authority}{uri.AbsolutePath}";
         }
 
-        return uriStr;
+        var queryIdx = uriStr.IndexOf('?');
+        return queryIdx > 0 ? uriStr.Substring(0, queryIdx) : uriStr;
     }
 }

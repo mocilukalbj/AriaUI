@@ -9,8 +9,19 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            archive_ext: tar.gz
+          - os: windows-latest
+            rid: win-x64
+            archive_ext: zip
+
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -20,15 +31,40 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Install Native AOT prerequisites
+      - name: Install Native AOT prerequisites (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev libfontconfig1-dev libice-dev libsm-dev libx11-dev libxext-dev
 
-      - name: Publish Native AOT (Linux x64)
+      - name: Publish Native AOT
+        run: dotnet publish -r ${{ matrix.rid }} -c Release /p:PublishAot=true -o publish/${{ matrix.rid }}
+
+      - name: Archive artifacts (Linux)
+        if: runner.os == 'Linux'
         run: |
-          dotnet publish -r linux-x64 -c Release /p:PublishAot=true -o publish/linux-x64
-          cd publish/linux-x64
-          tar -czvf ../../AriaUI-linux-x64-${{ github.ref_name }}.tar.gz AriaUI libHarfBuzzSharp.so libSkiaSharp.so
+          cd publish/${{ matrix.rid }}
+          tar -czvf ../../AriaUI-${{ matrix.rid }}-${{ github.ref_name }}.tar.gz *
           cd ../..
+
+      - name: Archive artifacts (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path publish/${{ matrix.rid }}/* -DestinationPath AriaUI-${{ matrix.rid }}-${{ github.ref_name }}.zip
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AriaUI-${{ matrix.rid }}
+          path: AriaUI-${{ matrix.rid }}-${{ github.ref_name }}.${{ matrix.archive_ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: release-artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -37,7 +73,6 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: |
-            AriaUI-linux-x64-${{ github.ref_name }}.tar.gz
+          files: release-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

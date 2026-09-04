@@ -13,8 +13,6 @@ public partial class SettingsViewModel : ViewModelBase
 {
     private readonly ISettingsService _settingsService;
     private readonly IAriaTaskService _taskService;
-    private readonly IAriaProcessService _processService;
-    private readonly ITrackerService _trackerService;
 
     [ObservableProperty]
     private bool _autoStartDaemon;
@@ -27,6 +25,9 @@ public partial class SettingsViewModel : ViewModelBase
 
     [ObservableProperty]
     private decimal _rpcPort = 6800;
+
+    [ObservableProperty]
+    private bool _rpcUseTls;
 
     [ObservableProperty]
     private string _rpcSecret = string.Empty;
@@ -77,14 +78,10 @@ public partial class SettingsViewModel : ViewModelBase
 
     public SettingsViewModel(
         ISettingsService settingsService,
-        IAriaTaskService taskService,
-        IAriaProcessService processService,
-        ITrackerService trackerService)
+        IAriaTaskService taskService)
     {
         _settingsService = settingsService;
         _taskService = taskService;
-        _processService = processService;
-        _trackerService = trackerService;
 
         LoadFromSettings();
     }
@@ -96,6 +93,7 @@ public partial class SettingsViewModel : ViewModelBase
         Aria2ExecutablePath = s.Aria2ExecutablePath;
         RpcHost = s.RpcHost;
         RpcPort = s.RpcPort;
+        RpcUseTls = s.RpcUseTls;
         RpcSecret = s.RpcSecret;
         DefaultDownloadDir = s.DefaultDownloadDir;
         MaxConcurrentDownloads = s.MaxConcurrentDownloads;
@@ -124,6 +122,7 @@ public partial class SettingsViewModel : ViewModelBase
                 Aria2ExecutablePath = Aria2ExecutablePath,
                 RpcHost = RpcHost,
                 RpcPort = (int)RpcPort,
+                RpcUseTls = RpcUseTls,
                 RpcSecret = RpcSecret,
                 DefaultDownloadDir = DefaultDownloadDir,
                 MaxConcurrentDownloads = (int)MaxConcurrentDownloads,
@@ -146,18 +145,23 @@ public partial class SettingsViewModel : ViewModelBase
                 return;
             }
 
-            await _settingsService.SaveAsync(newSettings);
-
-            if (_taskService.IsConnected)
-            {
-                await _taskService.ApplySpeedLimitAsync(newSettings.MaxOverallDownloadLimit, newSettings.MaxOverallUploadLimit);
-            }
-
+            await _taskService.SaveAndApplySettingsAsync(newSettings);
+            LoadFromSettings();
             WeakReferenceMessenger.Default.Send(new ThemeChangedMessage(ThemeMode));
+
             WeakReferenceMessenger.Default.Send(new NotificationMessage("配置已保存并生效！"));
 
             StatusMessage = "设置已保存并生效！";
             IsStatusError = false;
+        }
+        catch (SettingsApplicationException ex)
+        {
+            LoadFromSettings();
+            WeakReferenceMessenger.Default.Send(new ThemeChangedMessage(ThemeMode));
+            StatusMessage = $"{ex.Message} {ex.InnerException?.Message}";
+            IsStatusError = true;
+            WeakReferenceMessenger.Default.Send(
+                new NotificationMessage(StatusMessage, IsError: true));
         }
         catch (Exception ex)
         {
@@ -179,6 +183,12 @@ public partial class SettingsViewModel : ViewModelBase
             ExtraTrackers = _settingsService.Settings.ExtraTrackers;
             StatusMessage = "Tracker 列表更新成功！";
             IsStatusError = false;
+        }
+        catch (SettingsApplicationException ex)
+        {
+            ExtraTrackers = _settingsService.Settings.ExtraTrackers;
+            StatusMessage = $"{ex.Message} {ex.InnerException?.Message}";
+            IsStatusError = true;
         }
         catch (Exception ex)
         {

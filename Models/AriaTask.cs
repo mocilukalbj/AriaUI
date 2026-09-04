@@ -135,6 +135,7 @@ public class AriaBittorrentInfo
     public string? Comment { get; set; }
 
     [JsonPropertyName("creationDate")]
+    [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
     public long? CreationDate { get; set; }
 
     [JsonPropertyName("mode")]

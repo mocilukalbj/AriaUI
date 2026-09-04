@@ -1,5 +1,6 @@
 using System;
-using System.Net.Http;
+using System.Collections.Generic;
+using System.Runtime.ExceptionServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -8,6 +9,7 @@ using Avalonia.Platform;
 using Avalonia.Styling;
 using CommunityToolkit.Mvvm.Messaging;
 using Microsoft.Extensions.DependencyInjection;
+using AriaUI.Helpers;
 using AriaUI.Models;
 using AriaUI.Services;
 using AriaUI.ViewModels;
@@ -29,19 +31,19 @@ public partial class App : Application
         var collection = new ServiceCollection();
 
         // Register Core Services
-        collection.AddSingleton(new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
         collection.AddSingleton<ISettingsService, SettingsService>();
         collection.AddSingleton<IFileSystemService, FileSystemService>();
-        collection.AddSingleton<ITrackerService, TrackerService>();
+        collection.AddSingleton<ITrackerService>(_ => new TrackerService());
         collection.AddSingleton<IAriaProcessService, AriaProcessService>();
         collection.AddSingleton<IAriaRpcClient, AriaWebSocketRpcClient>();
         collection.AddSingleton<IAriaTaskService, AriaTaskService>();
 
-        // Register Factories
+        // Register Factories (Reflection-free for AOT compatibility)
         collection.AddTransient<NewTaskViewModel>();
-        collection.AddSingleton<Func<NewTaskViewModel>>(sp => () => ActivatorUtilities.CreateInstance<NewTaskViewModel>(sp));
+        collection.AddSingleton<Func<NewTaskViewModel>>(sp => () =>
+            new NewTaskViewModel(sp.GetRequiredService<IAriaTaskService>(), sp.GetRequiredService<ISettingsService>()));
         collection.AddSingleton<Func<AriaTaskInfo, TaskItemViewModel>>(sp =>
-            taskInfo => ActivatorUtilities.CreateInstance<TaskItemViewModel>(sp, taskInfo));
+            taskInfo => new TaskItemViewModel(taskInfo, sp.GetRequiredService<IAriaTaskService>()));
 
         // Register ViewModels
         collection.AddSingleton<TaskListViewModel>();
@@ -54,129 +56,91 @@ public partial class App : Application
         var settingsService = Services.GetRequiredService<ISettingsService>();
         ApplyTheme(settingsService.Settings.ThemeMode);
 
-        // Listen for Theme changes
+        // Listen for Theme changes (marshaled to UI Thread to prevent threading issues)
         WeakReferenceMessenger.Default.Register<ThemeChangedMessage>(this, (r, m) =>
         {
-            ApplyTheme(m.ThemeMode);
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => ApplyTheme(m.ThemeMode));
         });
 
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
 
             var mainVm = Services.GetRequiredService<MainWindowViewModel>();
-            desktop.MainWindow = new MainWindow
+            var taskService = Services.GetRequiredService<IAriaTaskService>();
+            var processService = Services.GetRequiredService<IAriaProcessService>();
+            var rpcClient = Services.GetRequiredService<IAriaRpcClient>();
+
+            var mainWindow = new MainWindow
             {
                 DataContext = mainVm
             };
 
-            var taskService = Services.GetRequiredService<IAriaTaskService>();
-
-            // Setup System Tray Icon
-            SetupTrayIcon(desktop, taskService);
-
-            // Lifecycle clean exit
-            desktop.Exit += (s, e) =>
+            // Register asynchronous, non-blocking graceful shutdown pipeline
+            mainWindow.RegisterAsyncShutdownHandler(async () =>
             {
+                var failures = new List<Exception>();
                 try
                 {
-                    var taskServiceInstance = Services.GetService<IAriaTaskService>();
-                    taskServiceInstance?.Dispose();
-
-                    var processService = Services.GetService<IAriaProcessService>();
-                    processService?.StopDaemonAsync().GetAwaiter().GetResult();
-
-                    var rpcClient = Services.GetService<IAriaRpcClient>();
-                    rpcClient?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    await taskService.ShutdownAsync();
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"[App Exit Cleanup Error]: {ex.Message}");
+                    failures.Add(ex);
                 }
+
+                try
+                {
+                    using var processTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await processService.StopDaemonAsync(processTimeoutCts.Token);
+                }
+                catch (Exception ex)
+                {
+                    failures.Add(ex);
+                }
+
+                try
+                {
+                    await rpcClient.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    failures.Add(ex);
+                }
+
+                if (failures.Count == 1)
+                {
+                    ExceptionDispatchInfo.Capture(failures[0]).Throw();
+                }
+
+                if (failures.Count > 1)
+                {
+                    throw new AggregateException("应用关闭时发生多个错误。", failures);
+                }
+            });
+
+            desktop.MainWindow = mainWindow;
+
+            // Non-blocking cleanup fallback
+            desktop.Exit += (s, e) =>
+            {
+                Services?.GetService<IAriaTaskService>()?.Dispose();
+                Services?.GetService<IAriaProcessService>()?.Dispose();
             };
 
             base.OnFrameworkInitializationCompleted();
 
-            // Initialize Task Service asynchronously in background
-            _ = taskService.InitializeAsync();
+            // Initialize Task Service asynchronously in background with error observation
+            taskService.InitializeAsync().SafeFireAndForget(ex =>
+            {
+                Console.Error.WriteLine($"[App Initialization Error]: {ex}");
+                WeakReferenceMessenger.Default.Send(new NotificationMessage($"初始化 Aria2 服务失败: {ex.Message}", IsError: true));
+            });
         }
         else
         {
             base.OnFrameworkInitializationCompleted();
         }
-    }
-
-    private void SetupTrayIcon(IClassicDesktopStyleApplicationLifetime desktop, IAriaTaskService taskService)
-    {
-        try
-        {
-            var trayIcon = new TrayIcon
-            {
-                Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://AriaUI/Assets/avalonia-logo.ico"))),
-                ToolTipText = "AriaUI - 下载管理器",
-                IsVisible = true
-            };
-
-            var menu = new NativeMenu();
-
-            var showItem = new NativeMenuItem("显示主窗口");
-            showItem.Click += (s, e) => ShowMainWindow(desktop);
-
-            var resumeAllItem = new NativeMenuItem("▶ 全部开始");
-            resumeAllItem.Click += async (s, e) =>
-            {
-                try { await taskService.ResumeAllTasksAsync(); } catch { }
-            };
-
-            var pauseAllItem = new NativeMenuItem("⏸ 全部暂停");
-            pauseAllItem.Click += async (s, e) =>
-            {
-                try { await taskService.PauseAllTasksAsync(); } catch { }
-            };
-
-            var exitItem = new NativeMenuItem("✕ 退出程序");
-            exitItem.Click += (s, e) => ExitApplication(desktop);
-
-            menu.Items.Add(showItem);
-            menu.Items.Add(new NativeMenuItemSeparator());
-            menu.Items.Add(resumeAllItem);
-            menu.Items.Add(pauseAllItem);
-            menu.Items.Add(new NativeMenuItemSeparator());
-            menu.Items.Add(exitItem);
-
-            trayIcon.Menu = menu;
-            trayIcon.Clicked += (s, e) => ShowMainWindow(desktop);
-
-            var trayIcons = new TrayIcons { trayIcon };
-            TrayIcon.SetIcons(this, trayIcons);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[SetupTrayIcon Error]: {ex.Message}");
-        }
-    }
-
-    private void ShowMainWindow(IClassicDesktopStyleApplicationLifetime desktop)
-    {
-        if (desktop.MainWindow is MainWindow window)
-        {
-            window.Show();
-            if (window.WindowState == WindowState.Minimized)
-            {
-                window.WindowState = WindowState.Normal;
-            }
-            window.Activate();
-        }
-    }
-
-    private void ExitApplication(IClassicDesktopStyleApplicationLifetime desktop)
-    {
-        if (desktop.MainWindow is MainWindow window)
-        {
-            window.IsExplicitExit = true;
-            window.Close();
-        }
-        desktop.Shutdown();
     }
 
     public void ApplyTheme(string themeMode)

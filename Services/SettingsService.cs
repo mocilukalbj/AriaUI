@@ -11,9 +11,8 @@ namespace AriaUI.Services;
 public interface ISettingsService
 {
     AppSettings Settings { get; }
-    void Load();
-    Task LoadAsync();
-    Task SaveAsync(AppSettings? newSettings = null);
+    Task SaveAsync(AppSettings newSettings);
+    Task<AppSettings> UpdateAsync(Action<AppSettings> update);
 }
 
 public class SettingsService : ISettingsService
@@ -22,134 +21,237 @@ public class SettingsService : ISettingsService
     private readonly SemaphoreSlim _saveLock = new(1, 1);
     private AppSettings _settings = new();
 
-    public AppSettings Settings => _settings;
+    public AppSettings Settings => _settings.Clone();
 
     public SettingsService()
     {
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         if (string.IsNullOrWhiteSpace(appData))
         {
-            appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
+            appData = Path.Combine(userProfile, ".config");
         }
         var configDir = Path.Combine(appData, "AriaUI");
 
-        try
+        var legacyConfig = Path.Combine(userProfile, ".config", "AriaUI", "config.json");
+        var standardConfig = Path.Combine(configDir, "config.json");
+        if (File.Exists(legacyConfig) && !File.Exists(standardConfig))
+        {
+            _configFilePath = legacyConfig;
+        }
+        else
         {
             Directory.CreateDirectory(configDir);
+            _configFilePath = standardConfig;
         }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[SettingsService] Failed to create config dir: {ex.Message}");
-        }
-
-        _configFilePath = Path.Combine(configDir, "config.json");
-
-        var defaultDownload = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-        if (!Directory.Exists(defaultDownload))
-        {
-            defaultDownload = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "下载");
-        }
-        _settings.DefaultDownloadDir = defaultDownload;
 
         Load();
     }
 
-    public void Load()
+    private void Load()
     {
         try
         {
             if (File.Exists(_configFilePath))
             {
                 var json = File.ReadAllText(_configFilePath);
-                var loaded = JsonSerializer.Deserialize(json, AriaJsonContext.Default.AppSettings);
-                if (loaded != null)
-                {
-                    _settings = loaded;
-                }
+                _settings = JsonSerializer.Deserialize(json, AriaJsonContext.Default.AppSettings)
+                    ?? throw new JsonException("Settings file contains null.");
             }
         }
-        catch (Exception ex)
+        catch (JsonException ex)
         {
-            Console.Error.WriteLine($"[SettingsService] Fallback to default settings: {ex.Message}");
+            Console.Error.WriteLine($"[SettingsService] Failed to parse config file: {ex.Message}");
+            BackupCorruptedConfig();
+            throw;
         }
 
-        EnsureSecretAndDir();
+        var changed = EnsureSecretAndDir();
+        ValidateLoadedSettings();
+        if (changed)
+        {
+            PersistSettings(_settings);
+        }
+        else
+        {
+            SetPrivateFileMode(_configFilePath);
+        }
     }
 
-    public async Task LoadAsync()
+    private void BackupCorruptedConfig()
     {
-        try
+        if (File.Exists(_configFilePath))
         {
-            if (File.Exists(_configFilePath))
-            {
-                var json = await File.ReadAllTextAsync(_configFilePath);
-                var loaded = JsonSerializer.Deserialize(json, AriaJsonContext.Default.AppSettings);
-                if (loaded != null)
-                {
-                    _settings = loaded;
-                }
-            }
+            var badConfig = $"{_configFilePath}.bad-{DateTime.UtcNow:yyyyMMddHHmmss}";
+            File.Copy(_configFilePath, badConfig, true);
+            SetPrivateFileMode(badConfig);
+            Console.Error.WriteLine($"[SettingsService] Corrupted config file backed up to: {badConfig}");
         }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[SettingsService] Fallback to default settings: {ex.Message}");
-        }
-
-        EnsureSecretAndDir();
     }
 
-    private void EnsureSecretAndDir()
+    private bool EnsureSecretAndDir()
     {
+        var changed = false;
+
         if (string.IsNullOrWhiteSpace(_settings.RpcSecret))
         {
             _settings.RpcSecret = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+            changed = true;
         }
 
-        if (string.IsNullOrWhiteSpace(_settings.DefaultDownloadDir) || !Directory.Exists(_settings.DefaultDownloadDir))
+        return EnsureDefaultDownloadDir(_settings) || changed;
+    }
+
+    private static bool EnsureDefaultDownloadDir(AppSettings settings)
+    {
+        if (!string.IsNullOrWhiteSpace(settings.DefaultDownloadDir))
         {
-            var fallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-            if (!Directory.Exists(fallback))
-            {
-                fallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "下载");
-                try { Directory.CreateDirectory(fallback); } catch { }
-            }
-            _settings.DefaultDownloadDir = fallback;
+            return false;
+        }
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var fallback = Path.Combine(userProfile, "Downloads");
+        if (!Directory.Exists(fallback))
+        {
+            fallback = Path.Combine(userProfile, "下载");
+            Directory.CreateDirectory(fallback);
+        }
+        settings.DefaultDownloadDir = fallback;
+        return true;
+    }
+
+    private void ValidateLoadedSettings()
+    {
+        var errors = _settings.Validate();
+        if (errors.Count > 0)
+        {
+            throw new InvalidDataException($"Invalid settings: {string.Join("; ", errors)}");
         }
     }
 
-    public async Task SaveAsync(AppSettings? newSettings = null)
+    public async Task SaveAsync(AppSettings newSettings)
     {
+        ArgumentNullException.ThrowIfNull(newSettings);
+
         await _saveLock.WaitAsync();
         try
         {
-            var targetSettings = newSettings ?? _settings;
+            var targetSettings = newSettings.Clone();
+            _ = EnsureDefaultDownloadDir(targetSettings);
             var errors = targetSettings.Validate();
             if (errors.Count > 0)
             {
                 throw new ArgumentException(string.Join("; ", errors));
             }
 
-            var json = JsonSerializer.Serialize(targetSettings, AriaJsonContext.Default.AppSettings);
-            
-            var tempFile = _configFilePath + ".tmp";
-            await File.WriteAllTextAsync(tempFile, json);
-
-            try
-            {
-                if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
-                {
-                    File.SetUnixFileMode(tempFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-                }
-            }
-            catch { }
-
-            File.Move(tempFile, _configFilePath, true);
-
+            await PersistSettingsAsync(targetSettings);
             _settings = targetSettings;
         }
         finally
         {
             _saveLock.Release();
+        }
+    }
+
+    public async Task<AppSettings> UpdateAsync(Action<AppSettings> update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+
+        await _saveLock.WaitAsync();
+        try
+        {
+            var targetSettings = _settings.Clone();
+            update(targetSettings);
+            _ = EnsureDefaultDownloadDir(targetSettings);
+            var errors = targetSettings.Validate();
+            if (errors.Count > 0)
+            {
+                throw new ArgumentException(string.Join("; ", errors));
+            }
+
+            await PersistSettingsAsync(targetSettings);
+            _settings = targetSettings;
+            return targetSettings.Clone();
+        }
+        finally
+        {
+            _saveLock.Release();
+        }
+    }
+
+    private void PersistSettings(AppSettings settings)
+    {
+        var json = JsonSerializer.Serialize(settings, AriaJsonContext.Default.AppSettings);
+        var tempFile = _configFilePath + ".tmp";
+
+        try
+        {
+            WritePrivateText(tempFile, json);
+            File.Move(tempFile, _configFilePath, true);
+        }
+        catch
+        {
+            TryDeleteTempFile(tempFile);
+            throw;
+        }
+    }
+
+    private async Task PersistSettingsAsync(AppSettings settings)
+    {
+        var json = JsonSerializer.Serialize(settings, AriaJsonContext.Default.AppSettings);
+        var tempFile = _configFilePath + ".tmp";
+
+        try
+        {
+            await WritePrivateTextAsync(tempFile, json);
+            File.Move(tempFile, _configFilePath, true);
+        }
+        catch
+        {
+            TryDeleteTempFile(tempFile);
+            throw;
+        }
+    }
+
+    private static void SetPrivateFileMode(string filePath)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            File.SetUnixFileMode(filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    private static void WritePrivateText(string filePath, string contents)
+    {
+        using var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+        SetPrivateFileMode(filePath);
+        using var writer = new StreamWriter(stream);
+        writer.Write(contents);
+    }
+
+    private static async Task WritePrivateTextAsync(string filePath, string contents)
+    {
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 4096,
+            useAsync: true);
+        SetPrivateFileMode(filePath);
+        await using var writer = new StreamWriter(stream);
+        await writer.WriteAsync(contents);
+    }
+
+    private static void TryDeleteTempFile(string tempFile)
+    {
+        try
+        {
+            File.Delete(tempFile);
+        }
+        catch
+        {
+            // Preserve the original persistence exception.
         }
     }
 }

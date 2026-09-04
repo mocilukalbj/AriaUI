@@ -19,23 +19,13 @@ sealed class Program
             e.SetObserved();
         };
 
-        try
-        {
-            BuildAvaloniaApp()
-                .StartWithClassicDesktopLifetime(args);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[APP RUN CRASH]: {ex}");
-        }
+        BuildAvaloniaApp()
+            .StartWithClassicDesktopLifetime(args);
     }
 
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()
             .UsePlatformDetect()
-#if DEBUG
-            .WithDeveloperTools()
-#endif
             .WithInterFont()
             .LogToTrace();
 }

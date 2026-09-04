@@ -14,7 +14,6 @@ namespace AriaUI.ViewModels;
 public partial class TaskListViewModel : ViewModelBase, IRecipient<TasksUpdatedMessage>
 {
     private readonly IAriaTaskService _taskService;
-    private readonly ISettingsService _settingsService;
     private readonly Func<AriaTaskInfo, TaskItemViewModel> _taskItemFactory;
     private readonly Func<NewTaskViewModel> _newTaskFactory;
     private readonly Dictionary<string, TaskItemViewModel> _taskMap = new();
@@ -56,15 +55,18 @@ public partial class TaskListViewModel : ViewModelBase, IRecipient<TasksUpdatedM
     private NewTaskViewModel? _newTaskVm;
 
     public ObservableCollection<TaskItemViewModel> FilteredTasks { get; } = new();
+    public bool IsAllFilterSelected => FilterIndex == 0;
+    public bool IsActiveFilterSelected => FilterIndex == 1;
+    public bool IsWaitingFilterSelected => FilterIndex == 2;
+    public bool IsCompleteFilterSelected => FilterIndex == 3;
+    public bool IsStoppedFilterSelected => FilterIndex == 4;
 
     public TaskListViewModel(
         IAriaTaskService taskService,
-        ISettingsService settingsService,
         Func<AriaTaskInfo, TaskItemViewModel> taskItemFactory,
         Func<NewTaskViewModel> newTaskFactory)
     {
         _taskService = taskService;
-        _settingsService = settingsService;
         _taskItemFactory = taskItemFactory;
         _newTaskFactory = newTaskFactory;
 
@@ -78,6 +80,11 @@ public partial class TaskListViewModel : ViewModelBase, IRecipient<TasksUpdatedM
 
     partial void OnFilterIndexChanged(int value)
     {
+        OnPropertyChanged(nameof(IsAllFilterSelected));
+        OnPropertyChanged(nameof(IsActiveFilterSelected));
+        OnPropertyChanged(nameof(IsWaitingFilterSelected));
+        OnPropertyChanged(nameof(IsCompleteFilterSelected));
+        OnPropertyChanged(nameof(IsStoppedFilterSelected));
         ApplyFilter();
     }
 
@@ -88,118 +95,106 @@ public partial class TaskListViewModel : ViewModelBase, IRecipient<TasksUpdatedM
 
     private void UpdateTasksFromService()
     {
-        try
+        var allServiceTasks = new List<AriaTaskInfo>();
+        allServiceTasks.AddRange(_taskService.ActiveTasks);
+        allServiceTasks.AddRange(_taskService.WaitingTasks);
+        allServiceTasks.AddRange(_taskService.StoppedTasks);
+
+        var existingGids = new HashSet<string>(_taskMap.Keys);
+        var currentGids = new HashSet<string>();
+
+        int active = 0, waiting = 0, complete = 0, stopped = 0;
+
+        foreach (var taskInfo in allServiceTasks)
         {
-            var allServiceTasks = new List<AriaTaskInfo>();
-            if (_taskService.ActiveTasks != null) allServiceTasks.AddRange(_taskService.ActiveTasks);
-            if (_taskService.WaitingTasks != null) allServiceTasks.AddRange(_taskService.WaitingTasks);
-            if (_taskService.StoppedTasks != null) allServiceTasks.AddRange(_taskService.StoppedTasks);
-
-            var existingGids = new HashSet<string>(_taskMap.Keys);
-            var currentGids = new HashSet<string>();
-
-            int active = 0, waiting = 0, complete = 0, stopped = 0;
-
-            foreach (var taskInfo in allServiceTasks)
+            if (string.IsNullOrEmpty(taskInfo.Gid))
             {
-                if (string.IsNullOrEmpty(taskInfo.Gid)) continue;
-                currentGids.Add(taskInfo.Gid);
+                throw new InvalidDataException("aria2 task response contains an empty GID.");
+            }
+            currentGids.Add(taskInfo.Gid);
 
-                switch (taskInfo.Status.ToLowerInvariant())
-                {
-                    case "active": active++; break;
-                    case "waiting":
-                    case "paused": waiting++; break;
-                    case "complete": complete++; break;
-                    default: stopped++; break;
-                }
-
-                if (_taskMap.TryGetValue(taskInfo.Gid, out var vm))
-                {
-                    vm.Update(taskInfo);
-                }
-                else
-                {
-                    var newVm = _taskItemFactory(taskInfo);
-                    _taskMap[taskInfo.Gid] = newVm;
-                }
+            switch (taskInfo.Status.ToLowerInvariant())
+            {
+                case "active": active++; break;
+                case "waiting":
+                case "paused": waiting++; break;
+                case "complete": complete++; break;
+                default: stopped++; break;
             }
 
-            // Remove deleted tasks
-            foreach (var gid in existingGids)
+            if (_taskMap.TryGetValue(taskInfo.Gid, out var vm))
             {
-                if (!currentGids.Contains(gid))
-                {
-                    _taskMap.Remove(gid);
-                }
+                vm.Update(taskInfo);
             }
-
-            ActiveTaskCount = active;
-            WaitingTaskCount = waiting;
-            CompleteTaskCount = complete;
-            StoppedTaskCount = stopped;
-            TotalTaskCount = allServiceTasks.Count;
-            HasActiveTasks = active > 0;
-
-            ApplyFilter();
+            else
+            {
+                _taskMap[taskInfo.Gid] = _taskItemFactory(taskInfo);
+            }
         }
-        catch (Exception ex)
+
+        foreach (var gid in existingGids)
         {
-            Console.Error.WriteLine($"[TaskListViewModel] Error updating tasks: {ex.Message}");
+            if (!currentGids.Contains(gid))
+            {
+                _taskMap.Remove(gid);
+            }
         }
+
+        ActiveTaskCount = active;
+        WaitingTaskCount = waiting;
+        CompleteTaskCount = complete;
+        StoppedTaskCount = stopped;
+        TotalTaskCount = allServiceTasks.Count;
+        HasActiveTasks = active > 0;
+
+        ApplyFilter();
     }
 
     private void ApplyFilter()
     {
-        try
+        var query = _taskMap.Values.AsEnumerable();
+
+        if (!string.IsNullOrWhiteSpace(SearchText))
         {
-            var query = _taskMap.Values.AsEnumerable();
+            query = query.Where(t => t.Name.Contains(SearchText, StringComparison.OrdinalIgnoreCase));
+        }
 
-            if (!string.IsNullOrWhiteSpace(SearchText))
+        query = FilterIndex switch
+        {
+            0 => query,
+            1 => query.Where(t => t.IsActive),
+            2 => query.Where(t => t.IsPaused),
+            3 => query.Where(t => t.IsComplete),
+            4 => query.Where(t => t.IsError || (!t.IsActive && !t.IsPaused && !t.IsComplete)),
+            _ => throw new InvalidOperationException($"Unknown task filter index: {FilterIndex}.")
+        };
+
+        var newList = query.ToList();
+
+        // Incremental sync to prevent UI flickering and maintain scroll state
+        int i = 0;
+        for (; i < newList.Count; i++)
+        {
+            if (i < FilteredTasks.Count)
             {
-                query = query.Where(t => t.Name.Contains(SearchText, StringComparison.OrdinalIgnoreCase));
-            }
-
-            query = FilterIndex switch
-            {
-                1 => query.Where(t => t.IsActive),
-                2 => query.Where(t => t.IsPaused),
-                3 => query.Where(t => t.IsComplete),
-                4 => query.Where(t => t.IsError || (!t.IsActive && !t.IsPaused && !t.IsComplete)),
-                _ => query
-            };
-
-            var newList = query.ToList();
-
-            // Incremental sync to prevent UI flickering and maintain scroll state
-            int i = 0;
-            for (; i < newList.Count; i++)
-            {
-                if (i < FilteredTasks.Count)
+                if (!ReferenceEquals(FilteredTasks[i], newList[i]))
                 {
-                    if (!ReferenceEquals(FilteredTasks[i], newList[i]))
-                    {
-                        FilteredTasks[i] = newList[i];
-                    }
-                }
-                else
-                {
-                    FilteredTasks.Add(newList[i]);
+                    FilteredTasks[i] = newList[i];
                 }
             }
-
-            while (FilteredTasks.Count > newList.Count)
+            else
             {
-                FilteredTasks.RemoveAt(FilteredTasks.Count - 1);
+                FilteredTasks.Add(newList[i]);
             }
+        }
 
-            HasTasks = FilteredTasks.Count > 0;
-            HasNoTasks = FilteredTasks.Count == 0;
-        }
-        catch (Exception ex)
+        while (FilteredTasks.Count > newList.Count)
         {
-            Console.Error.WriteLine($"[TaskListViewModel] Error applying filter: {ex.Message}");
+            FilteredTasks.RemoveAt(FilteredTasks.Count - 1);
         }
+
+        HasTasks = FilteredTasks.Count > 0;
+        HasNoTasks = FilteredTasks.Count == 0;
     }
 
     [RelayCommand]
@@ -208,8 +203,11 @@ public partial class TaskListViewModel : ViewModelBase, IRecipient<TasksUpdatedM
         var vm = _newTaskFactory();
         vm.RequestClose += () =>
         {
-            ShowNewTaskDialog = false;
-            NewTaskVm = null;
+            if (ReferenceEquals(NewTaskVm, vm))
+            {
+                ShowNewTaskDialog = false;
+                NewTaskVm = null;
+            }
         };
         NewTaskVm = vm;
         ShowNewTaskDialog = true;
@@ -260,9 +258,11 @@ public partial class TaskListViewModel : ViewModelBase, IRecipient<TasksUpdatedM
     [RelayCommand]
     private void SetFilter(string filter)
     {
-        if (int.TryParse(filter, out var idx))
+        if (!int.TryParse(filter, out var index) || index is < 0 or > 4)
         {
-            FilterIndex = idx;
+            throw new ArgumentOutOfRangeException(nameof(filter), filter, "Task filter must be an integer from 0 through 4.");
         }
+
+        FilterIndex = index;
     }
 }

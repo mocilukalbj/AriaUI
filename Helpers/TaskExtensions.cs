@@ -15,8 +15,16 @@ public static class TaskExtensions
         }
         catch (Exception ex)
         {
-            onError?.Invoke(ex);
-            Console.Error.WriteLine($"[SafeFireAndForget Exception]: {ex.Message}");
+            try
+            {
+                onError?.Invoke(ex);
+            }
+            catch (Exception callbackEx)
+            {
+                Console.Error.WriteLine($"[SafeFireAndForget Callback Exception]: {callbackEx}");
+            }
+
+            Console.Error.WriteLine($"[SafeFireAndForget Exception]: {ex}");
         }
     }
 }

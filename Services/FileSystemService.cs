@@ -1,7 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 
 namespace AriaUI.Services;
 
@@ -9,68 +8,62 @@ public class FileSystemService : IFileSystemService
 {
     public void OpenFile(string filePath)
     {
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) return;
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        if (!File.Exists(filePath))
+        {
+            throw new FileNotFoundException("Cannot open a file that does not exist.", filePath);
+        }
 
-        try
+        ProcessStartInfo startInfo;
+        if (OperatingSystem.IsLinux())
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            {
-                var psi = new ProcessStartInfo("xdg-open") { UseShellExecute = false };
-                psi.ArgumentList.Add(filePath);
-                using var p = Process.Start(psi);
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                using var p = Process.Start(new ProcessStartInfo(filePath) { UseShellExecute = true });
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            {
-                var psi = new ProcessStartInfo("open") { UseShellExecute = false };
-                psi.ArgumentList.Add(filePath);
-                using var p = Process.Start(psi);
-            }
+            startInfo = new ProcessStartInfo("xdg-open") { UseShellExecute = false };
+            startInfo.ArgumentList.Add(filePath);
         }
-        catch (Exception ex)
+        else if (OperatingSystem.IsWindows())
         {
-            Console.Error.WriteLine($"[FileSystemService] Error opening file: {ex.Message}");
+            startInfo = new ProcessStartInfo(filePath) { UseShellExecute = true };
         }
+        else
+        {
+            throw new PlatformNotSupportedException("Opening files is supported only on Linux and Windows.");
+        }
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Failed to launch the system file opener for: {filePath}");
     }
 
     public void OpenDirectory(string directoryPath)
     {
-        if (string.IsNullOrWhiteSpace(directoryPath)) return;
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
 
         if (File.Exists(directoryPath))
         {
             directoryPath = Path.GetDirectoryName(directoryPath) ?? directoryPath;
         }
 
-        if (!Directory.Exists(directoryPath)) return;
+        if (!Directory.Exists(directoryPath))
+        {
+            throw new DirectoryNotFoundException($"Cannot open a directory that does not exist: {directoryPath}");
+        }
 
-        try
+        ProcessStartInfo startInfo;
+        if (OperatingSystem.IsLinux())
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            {
-                var psi = new ProcessStartInfo("xdg-open") { UseShellExecute = false };
-                psi.ArgumentList.Add(directoryPath);
-                using var p = Process.Start(psi);
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
-                psi.ArgumentList.Add(directoryPath);
-                using var p = Process.Start(psi);
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            {
-                var psi = new ProcessStartInfo("open") { UseShellExecute = false };
-                psi.ArgumentList.Add(directoryPath);
-                using var p = Process.Start(psi);
-            }
+            startInfo = new ProcessStartInfo("xdg-open") { UseShellExecute = false };
+            startInfo.ArgumentList.Add(directoryPath);
         }
-        catch (Exception ex)
+        else if (OperatingSystem.IsWindows())
         {
-            Console.Error.WriteLine($"[FileSystemService] Error opening directory: {ex.Message}");
+            startInfo = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+            startInfo.ArgumentList.Add(directoryPath);
         }
+        else
+        {
+            throw new PlatformNotSupportedException("Opening directories is supported only on Linux and Windows.");
+        }
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Failed to launch the system directory opener for: {directoryPath}");
     }
 }

@@ -12,10 +12,6 @@ public partial class MainWindowViewModel : ViewModelBase,
     IRecipient<GlobalStatUpdatedMessage>,
     IRecipient<NotificationMessage>
 {
-    private readonly IAriaTaskService _taskService;
-    private readonly ISettingsService _settingsService;
-    private readonly IAriaProcessService _processService;
-
     [ObservableProperty]
     private ViewModelBase _currentView;
 
@@ -46,20 +42,15 @@ public partial class MainWindowViewModel : ViewModelBase,
     [ObservableProperty]
     private bool _isToastError;
 
+    private CancellationTokenSource? _toastCts;
+
     public TaskListViewModel TaskListVm { get; }
     public SettingsViewModel SettingsVm { get; }
 
     public MainWindowViewModel(
-        IAriaTaskService taskService,
-        ISettingsService settingsService,
-        IAriaProcessService processService,
         TaskListViewModel taskListVm,
         SettingsViewModel settingsVm)
     {
-        _taskService = taskService;
-        _settingsService = settingsService;
-        _processService = processService;
-
         TaskListVm = taskListVm;
         SettingsVm = settingsVm;
 
@@ -98,14 +89,25 @@ public partial class MainWindowViewModel : ViewModelBase,
 
     public void ShowNotification(string message, bool isError = false)
     {
+        _toastCts?.Cancel();
+        _toastCts?.Dispose();
+        _toastCts = new CancellationTokenSource();
+        var token = _toastCts.Token;
+
         ToastMessage = message;
         IsToastError = isError;
         ShowToast = true;
 
-        Task.Delay(3000).ContinueWith(_ =>
+        // Error toasts are sticky (no auto-dismiss) so early init failures stay visible.
+        if (isError) return;
+
+        Task.Delay(3000, token).ContinueWith(_ =>
         {
-            Avalonia.Threading.Dispatcher.UIThread.Post(() => ShowToast = false);
-        });
+            if (!token.IsCancellationRequested)
+            {
+                Avalonia.Threading.Dispatcher.UIThread.Post(() => ShowToast = false);
+            }
+        }, TaskScheduler.Default);
     }
 
     [RelayCommand]

@@ -14,7 +14,7 @@ public static class FormatHelper
             order++;
             len /= 1024;
         }
-        return $"{len:0.##} {SizeUnits[order]}";
+        return $"{len.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} {SizeUnits[order]}";
     }
 
     public static string FormatSpeed(long bytesPerSec)
@@ -25,7 +25,7 @@ public static class FormatHelper
 
     public static string FormatEta(long totalBytes, long completedBytes, long speedBytesPerSec)
     {
-        if (speedBytesPerSec <= 0 || completedBytes >= totalBytes) return "--";
+        if (totalBytes <= 0 || speedBytesPerSec <= 0 || completedBytes >= totalBytes || completedBytes < 0) return "--";
         var remainingBytes = totalBytes - completedBytes;
         var seconds = remainingBytes / speedBytesPerSec;
 

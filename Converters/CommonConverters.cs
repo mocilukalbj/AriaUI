@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using Avalonia.Data;
 using Avalonia.Data.Converters;
 using Avalonia.Media;
 using AriaUI.Helpers;
@@ -20,10 +21,18 @@ public class SizeConverter : IValueConverter
         {
             return FormatHelper.FormatBytes(intBytes);
         }
+        if (value is double dblBytes)
+        {
+            return FormatHelper.FormatBytes((long)dblBytes);
+        }
+        if (value is string str && long.TryParse(str, out var parsed))
+        {
+            return FormatHelper.FormatBytes(parsed);
+        }
         return "0 B";
     }
 
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => BindingOperations.DoNothing;
 }
 
 public class SpeedConverter : IValueConverter
@@ -36,10 +45,22 @@ public class SpeedConverter : IValueConverter
         {
             return FormatHelper.FormatSpeed(bytes);
         }
+        if (value is int intBytes)
+        {
+            return FormatHelper.FormatSpeed(intBytes);
+        }
+        if (value is double dblBytes)
+        {
+            return FormatHelper.FormatSpeed((long)dblBytes);
+        }
+        if (value is string str && long.TryParse(str, out var parsed))
+        {
+            return FormatHelper.FormatSpeed(parsed);
+        }
         return "0 B/s";
     }
 
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => BindingOperations.DoNothing;
 }
 
 public class StatusColorConverter : IValueConverter
@@ -67,7 +88,7 @@ public class StatusColorConverter : IValueConverter
         };
     }
 
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => BindingOperations.DoNothing;
 }
 
 public class ConnectionBrushConverter : IValueConverter
@@ -86,7 +107,7 @@ public class ConnectionBrushConverter : IValueConverter
         return DisconnectedBrush;
     }
 
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => BindingOperations.DoNothing;
 }
 
 public class StatusTextConverter : IValueConverter
@@ -108,7 +129,7 @@ public class StatusTextConverter : IValueConverter
         };
     }
 
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => BindingOperations.DoNothing;
 }
 
 public class StatusAlertBackgroundConverter : IValueConverter
@@ -125,7 +146,7 @@ public class StatusAlertBackgroundConverter : IValueConverter
         return SuccessBg;
     }
 
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => BindingOperations.DoNothing;
 }
 
 public class StatusAlertBorderBrushConverter : IValueConverter
@@ -142,7 +163,7 @@ public class StatusAlertBorderBrushConverter : IValueConverter
         return SuccessBorder;
     }
 
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => BindingOperations.DoNothing;
 }
 
 public class StatusAlertForegroundConverter : IValueConverter
@@ -159,5 +180,5 @@ public class StatusAlertForegroundConverter : IValueConverter
         return SuccessText;
     }
 
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => throw new NotImplementedException();
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) => BindingOperations.DoNothing;
 }

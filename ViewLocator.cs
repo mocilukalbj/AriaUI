@@ -14,7 +14,6 @@ public class ViewLocator : IDataTemplate
 {
     private static readonly Dictionary<Type, Func<Control>> ViewMap = new()
     {
-        [typeof(MainWindowViewModel)] = () => new MainWindow(),
         [typeof(TaskListViewModel)] = () => new TaskListView(),
         [typeof(SettingsViewModel)] = () => new SettingsView(),
     };

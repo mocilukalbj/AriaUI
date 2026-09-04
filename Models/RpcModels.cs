@@ -54,6 +54,23 @@ public class RpcError
     public string Message { get; set; } = string.Empty;
 }
 
+public sealed class AriaRpcException(int code, string rpcMessage)
+    : Exception($"aria2 RPC error {code}: {rpcMessage}")
+{
+    public int Code { get; } = code;
+    public string RpcMessage { get; } = rpcMessage;
+
+    public bool IsUnauthorized =>
+        Code == 1 &&
+        string.Equals(RpcMessage.Trim().TrimEnd('.'), "Unauthorized", StringComparison.OrdinalIgnoreCase);
+}
+
+public class AriaVersionInfo
+{
+    [JsonPropertyName("version")]
+    public string Version { get; set; } = string.Empty;
+}
+
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(AppSettings))]
 [JsonSerializable(typeof(RpcRequest))]
@@ -62,6 +79,7 @@ public class RpcError
 [JsonSerializable(typeof(List<AriaTaskInfo>))]
 [JsonSerializable(typeof(AriaTaskInfo))]
 [JsonSerializable(typeof(AriaGlobalStat))]
+[JsonSerializable(typeof(AriaVersionInfo))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(Dictionary<string, object>))]
 [JsonSerializable(typeof(string[]))]

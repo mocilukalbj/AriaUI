@@ -1,6 +1,8 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.Messaging;
@@ -13,6 +15,7 @@ namespace AriaUI.ViewModels;
 public partial class TaskItemViewModel : ViewModelBase
 {
     private readonly IAriaTaskService _taskService;
+    private int _fileCheckVersion;
 
     [ObservableProperty]
     private string _gid = string.Empty;
@@ -62,6 +65,9 @@ public partial class TaskItemViewModel : ViewModelBase
     [ObservableProperty]
     private bool _hasUploadSpeed;
 
+    [ObservableProperty]
+    private bool _canOpenFile;
+
     public bool IsActive => Status == "active";
     public bool IsPaused => Status == "paused" || Status == "waiting";
     public bool IsComplete => Status == "complete";
@@ -69,7 +75,6 @@ public partial class TaskItemViewModel : ViewModelBase
 
     public bool CanPause => IsActive;
     public bool CanResume => IsPaused;
-    public bool CanOpenFile => IsComplete && !string.IsNullOrWhiteSpace(FilePath) && File.Exists(FilePath);
     public bool CanOpenFolder => !string.IsNullOrWhiteSpace(FilePath);
 
     public TaskItemViewModel(AriaTaskInfo taskInfo, IAriaTaskService taskService)
@@ -80,6 +85,9 @@ public partial class TaskItemViewModel : ViewModelBase
 
     public void Update(AriaTaskInfo info)
     {
+        var wasComplete = IsComplete;
+        var previousFilePath = FilePath;
+
         Gid = info.Gid;
         Name = info.DisplayName;
         Status = info.Status;
@@ -102,14 +110,38 @@ public partial class TaskItemViewModel : ViewModelBase
         SizeText = $"{FormatHelper.FormatBytes(CompletedBytes)} / {FormatHelper.FormatBytes(TotalBytes)}";
         EtaText = FormatHelper.FormatEta(TotalBytes, CompletedBytes, DownloadSpeedBytes);
 
+        if (!IsComplete || string.IsNullOrWhiteSpace(FilePath))
+        {
+            Interlocked.Increment(ref _fileCheckVersion);
+            CanOpenFile = false;
+        }
+        else if (!wasComplete || !string.Equals(previousFilePath, FilePath, StringComparison.Ordinal))
+        {
+            var version = Interlocked.Increment(ref _fileCheckVersion);
+            RefreshCanOpenFileAsync(FilePath, version).SafeFireAndForget();
+        }
+
         OnPropertyChanged(nameof(IsActive));
         OnPropertyChanged(nameof(IsPaused));
         OnPropertyChanged(nameof(IsComplete));
         OnPropertyChanged(nameof(IsError));
         OnPropertyChanged(nameof(CanPause));
         OnPropertyChanged(nameof(CanResume));
-        OnPropertyChanged(nameof(CanOpenFile));
         OnPropertyChanged(nameof(CanOpenFolder));
+    }
+
+    private async Task RefreshCanOpenFileAsync(string filePath, int version)
+    {
+        var exists = await Task.Run(() => File.Exists(filePath)).ConfigureAwait(false);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (version == Volatile.Read(ref _fileCheckVersion) &&
+                IsComplete &&
+                string.Equals(FilePath, filePath, StringComparison.Ordinal))
+            {
+                CanOpenFile = exists;
+            }
+        });
     }
 
     [RelayCommand]

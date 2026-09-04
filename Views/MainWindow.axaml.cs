@@ -1,23 +1,53 @@
 using System;
+using System.Threading.Tasks;
 using Avalonia.Controls;
 
 namespace AriaUI.Views;
 
 public partial class MainWindow : Window
 {
-    public bool IsExplicitExit { get; set; }
+    private bool _isShutdownCompleted;
+    private bool _isShuttingDown;
+    private Func<Task>? _asyncShutdownHandler;
 
     public MainWindow()
     {
         InitializeComponent();
 
-        Closing += (s, e) =>
+        Closing += async (s, e) =>
         {
-            if (!IsExplicitExit)
+            if (_isShutdownCompleted)
             {
-                e.Cancel = true;
-                Hide();
+                return;
+            }
+
+            e.Cancel = true;
+
+            if (_isShuttingDown)
+            {
+                return;
+            }
+            _isShuttingDown = true;
+
+            Hide();
+
+            try
+            {
+                if (_asyncShutdownHandler != null)
+                {
+                    await _asyncShutdownHandler();
+                }
+            }
+            finally
+            {
+                _isShutdownCompleted = true;
+                Close();
             }
         };
+    }
+
+    public void RegisterAsyncShutdownHandler(Func<Task> handler)
+    {
+        _asyncShutdownHandler = handler;
     }
 }

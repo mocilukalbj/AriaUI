@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using AriaUI.Services;
+using System.Threading;
 
 namespace AriaUI.ViewModels;
 
@@ -8,6 +9,7 @@ public partial class NewTaskViewModel : ViewModelBase
 {
     private readonly IAriaTaskService _taskService;
     private readonly ISettingsService _settingsService;
+    private CancellationTokenSource? _submitCts;
 
     [ObservableProperty]
     private int _selectedTabIndex; // 0 = URL/Magnet, 1 = Torrent
@@ -51,6 +53,8 @@ public partial class NewTaskViewModel : ViewModelBase
     {
         ErrorMessage = null;
         IsSubmitting = true;
+        using var submitCts = new CancellationTokenSource();
+        _submitCts = submitCts;
 
         try
         {
@@ -59,25 +63,34 @@ public partial class NewTaskViewModel : ViewModelBase
                 if (string.IsNullOrWhiteSpace(Urls))
                 {
                     ErrorMessage = "请输入下载链接或磁力链接 (Magnet)";
-                    IsSubmitting = false;
                     return;
                 }
 
-                await _taskService.AddUriAsync(Urls, SaveDir, (int)Split, Referer, UserAgent);
+                await _taskService.AddUriAsync(
+                    Urls,
+                    SaveDir,
+                    (int)Split,
+                    Referer,
+                    UserAgent,
+                    submitCts.Token);
             }
             else
             {
                 if (string.IsNullOrWhiteSpace(TorrentPath) || !File.Exists(TorrentPath))
                 {
                     ErrorMessage = "请选择有效的 .torrent 种子文件";
-                    IsSubmitting = false;
                     return;
                 }
 
-                await _taskService.AddTorrentAsync(TorrentPath, SaveDir);
+                await _taskService.AddTorrentAsync(TorrentPath, SaveDir, submitCts.Token);
             }
 
+            submitCts.Token.ThrowIfCancellationRequested();
             RequestClose?.Invoke();
+        }
+        catch (OperationCanceledException) when (submitCts.IsCancellationRequested)
+        {
+            // Cancel closes the dialog; no stale error should be shown afterwards.
         }
         catch (Exception ex)
         {
@@ -85,6 +98,10 @@ public partial class NewTaskViewModel : ViewModelBase
         }
         finally
         {
+            if (ReferenceEquals(_submitCts, submitCts))
+            {
+                _submitCts = null;
+            }
             IsSubmitting = false;
         }
     }
@@ -92,6 +109,7 @@ public partial class NewTaskViewModel : ViewModelBase
     [RelayCommand]
     private void Cancel()
     {
+        _submitCts?.Cancel();
         RequestClose?.Invoke();
     }
 }

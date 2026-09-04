@@ -55,7 +55,7 @@
                     <!-- Tab 0: All -->
                     <RadioButton Classes="Tag"
                                  GroupName="FilterTabs"
-                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=0, Mode=OneWay}"
+                                 IsChecked="{Binding IsAllFilterSelected, Mode=OneWay}"
                                  Command="{Binding SetFilterCommand}"
                                  CommandParameter="0"
                                  Content="全部"
@@ -64,7 +64,7 @@
                     <!-- Tab 1: Active -->
                     <RadioButton Classes="Tag"
                                  GroupName="FilterTabs"
-                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=1, Mode=OneWay}"
+                                 IsChecked="{Binding IsActiveFilterSelected, Mode=OneWay}"
                                  Command="{Binding SetFilterCommand}"
                                  CommandParameter="1"
                                  Content="{Binding ActiveTaskCount, StringFormat='{}正在下载 ({0})'}"
@@ -73,7 +73,7 @@
                     <!-- Tab 2: Waiting/Paused -->
                     <RadioButton Classes="Tag"
                                  GroupName="FilterTabs"
-                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=2, Mode=OneWay}"
+                                 IsChecked="{Binding IsWaitingFilterSelected, Mode=OneWay}"
                                  Command="{Binding SetFilterCommand}"
                                  CommandParameter="2"
                                  Content="{Binding WaitingTaskCount, StringFormat='{}等待/暂停 ({0})'}"
@@ -82,7 +82,7 @@
                     <!-- Tab 3: Complete -->
                     <RadioButton Classes="Tag"
                                  GroupName="FilterTabs"
-                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=3, Mode=OneWay}"
+                                 IsChecked="{Binding IsCompleteFilterSelected, Mode=OneWay}"
                                  Command="{Binding SetFilterCommand}"
                                  CommandParameter="3"
                                  Content="{Binding CompleteTaskCount, StringFormat='{}已完成 ({0})'}"
@@ -91,7 +91,7 @@
                     <!-- Tab 4: Stopped/Error -->
                     <RadioButton Classes="Tag"
                                  GroupName="FilterTabs"
-                                 IsChecked="{Binding FilterIndex, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=4, Mode=OneWay}"
+                                 IsChecked="{Binding IsStoppedFilterSelected, Mode=OneWay}"
                                  Command="{Binding SetFilterCommand}"
                                  CommandParameter="4"
                                  Content="{Binding StoppedTaskCount, StringFormat='{}停止/失败 ({0})'}"/>
