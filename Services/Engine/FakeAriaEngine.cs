@@ -14,7 +14,7 @@ namespace AriaUI.Services.Engine;
 /// Controllable in-memory fake implementation of IAriaEngine for contract and lifecycle testing (C01-C08).
 /// Enforces single owner thread, bounded channel capacity, monotonic request IDs, and fail-fast semantics.
 /// </summary>
-public sealed class FakeAriaEngine : IAriaEngine
+public sealed class FakeAriaEngine : ITestHookableEngine
 {
     private abstract class CommandBase
     {

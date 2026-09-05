@@ -45,6 +45,9 @@ public static class Phase1NativeProbe
         public int UseSignalHandler;
         public IntPtr DownloadDir;
         public IntPtr SessionFile;
+        public IntPtr OptionKeys;
+        public IntPtr OptionValues;
+        public uint OptionCount;
     }
 
     public static class NativeBridge
@@ -114,8 +117,15 @@ public static class Phase1NativeProbe
         return Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", ".."));
     }
 
+    private static int _nativeBuilt = 0;
+
     public static async Task BuildNativeLibrariesAsync()
     {
+        if (Interlocked.Exchange(ref _nativeBuilt, 1) == 1)
+        {
+            return;
+        }
+
         var repoRoot = GetRepoRoot();
         var runtimesDir = Path.Combine(repoRoot, "runtimes", "linux-x64", "native");
         Directory.CreateDirectory(runtimesDir);

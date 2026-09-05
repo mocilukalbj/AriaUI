@@ -336,6 +336,16 @@ public interface IAriaEngine : IAsyncDisposable
 }
 
 /// <summary>
+/// Test hook interface implemented by both FakeAriaEngine and NativeAriaEngineHost for contract testing (C01-C12).
+/// </summary>
+public interface ITestHookableEngine : IAriaEngine
+{
+    Func<Task>? OnStartingHook { get; set; }
+    Action<long, string>? OnBeforeCommandExecute { get; set; }
+    bool InjectFatalOnNextCommand { get; set; }
+}
+
+/// <summary>
 /// Backward-compatibility and convenience overloads for IAriaEngine.
 /// </summary>
 public static class AriaEngineExtensions

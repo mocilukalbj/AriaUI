@@ -7,6 +7,10 @@ using AriaUI.Models;
 
 namespace AriaUI.Services;
 
+/// <summary>
+/// Legacy RPC client interface, frozen per Phase 2 core native migration.
+/// </summary>
+[Obsolete("RPC functionality is frozen per Phase 2. Use NativeAriaEngineHost for active development.", false)]
 public interface IAriaRpcClient : IAsyncDisposable
 {
     bool IsConnected { get; }
@@ -40,6 +44,10 @@ public interface IAriaRpcClient : IAsyncDisposable
     Task<string> ShutdownAsync(CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Legacy WebSocket RPC client implementation, frozen per Phase 2.
+/// </summary>
+[Obsolete("RPC functionality is frozen per Phase 2. Use NativeAriaEngineHost for active development.", false)]
 public class AriaWebSocketRpcClient : IAriaRpcClient
 {
     internal sealed class ConnectionContext(ClientWebSocket socket, CancellationTokenSource cts, long generation, string secret)

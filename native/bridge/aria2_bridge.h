@@ -55,7 +55,22 @@ typedef struct A2InitOptions {
     int32_t use_signal_handler;
     const char* download_dir;    // UTF-8 or NULL
     const char* session_file;    // UTF-8 or NULL
+    const char* const* option_keys;
+    const char* const* option_values;
+    uint32_t option_count;
 } A2InitOptions;
+
+typedef struct A2TaskHandleInfo {
+    uint32_t struct_size;
+    uint32_t status;          // 0: active, 1: waiting, 2: paused, 3: complete, 4: error, 5: removed
+    int64_t total_length;
+    int64_t completed_length;
+    int64_t upload_length;
+    uint32_t download_speed;
+    uint32_t upload_speed;
+    int32_t error_code;
+    uint32_t num_files;
+} A2TaskHandleInfo;
 #pragma pack(pop)
 
 typedef void* A2SessionHandle;
@@ -80,9 +95,53 @@ int32_t a2_download_add_uri(A2SessionHandle session,
                             const char* out_filename,
                             uint64_t* out_gid);
 
+int32_t a2_download_add_uris(A2SessionHandle session,
+                             const char* const* uris,
+                             uint32_t uri_count,
+                             const char* const* option_keys,
+                             const char* const* option_values,
+                             uint32_t option_count,
+                             uint64_t* out_gid);
+
+int32_t a2_download_add_torrent(A2SessionHandle session,
+                                const char* torrent_file_path,
+                                const char* const* option_keys,
+                                const char* const* option_values,
+                                uint32_t option_count,
+                                uint64_t* out_gid);
+
 int32_t a2_download_pause(A2SessionHandle session, uint64_t gid, int32_t force);
 int32_t a2_download_unpause(A2SessionHandle session, uint64_t gid);
 int32_t a2_download_remove(A2SessionHandle session, uint64_t gid, int32_t force);
+int32_t a2_download_purge_results(A2SessionHandle session, uint32_t* out_purged_count);
+
+// Options
+int32_t a2_download_change_option(A2SessionHandle session,
+                                  uint64_t gid,
+                                  const char* const* option_keys,
+                                  const char* const* option_values,
+                                  uint32_t option_count);
+
+int32_t a2_engine_change_global_option(A2SessionHandle session,
+                                       const char* const* option_keys,
+                                       const char* const* option_values,
+                                       uint32_t option_count);
+
+int32_t a2_engine_get_global_option_value(A2SessionHandle session,
+                                          const char* name,
+                                          char* out_val,
+                                          uint32_t val_buf_len,
+                                          uint32_t* out_needed_len);
+
+int32_t a2_download_get_option_value(A2SessionHandle session,
+                                     uint64_t gid,
+                                     const char* name,
+                                     char* out_val,
+                                     uint32_t val_buf_len,
+                                     uint32_t* out_needed_len);
+
+// Task inspection
+int32_t a2_download_get_handle_info(A2SessionHandle session, uint64_t gid, A2TaskHandleInfo* out_info);
 
 // Stats & Events
 int32_t a2_engine_get_global_stat(A2SessionHandle session, A2GlobalStat* out_stat);

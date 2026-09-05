@@ -20,9 +20,10 @@ public static class ContractTests
     /// C01: 空任务启动、任务完成后再次添加
     /// 通过条件: 常驻 Ready，可继续添加；不把 run 自然结束伪装为就绪。
     /// </summary>
-    public static async Task Test_C01_EmptyStartAndContinuousTaskAdd()
+    public static async Task Test_C01_EmptyStartAndContinuousTaskAdd(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
-        await using var engine = new FakeAriaEngine();
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
+        await using var engine = engineFactory(null);
         Assert.Equal(EngineState.Created, engine.State);
 
         var options = CreateTestStartOptions();
@@ -55,9 +56,10 @@ public static class ContractTests
     /// C02: 重复启动/关闭，各状态提交业务命令
     /// 通过条件: 结果符合状态契约，无重复 session；非 Ready 明确拒绝，重复关闭保留首次结果。
     /// </summary>
-    public static async Task Test_C02_LifecycleAndStateValidation()
+    public static async Task Test_C02_LifecycleAndStateValidation(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
-        await using var engine = new FakeAriaEngine();
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
+        await using var engine = engineFactory(null);
 
         // 1. Created 状态下提交业务命令被明确拒绝
         await Assert.ThrowsAsync<EngineNotReadyException>(async () =>
@@ -99,11 +101,12 @@ public static class ContractTests
     /// C03: Starting 中关闭，初始化各步骤失败
     /// 通过条件: 不再发布 Ready；只清理已创建资源，各请求结束，根因保留。
     /// </summary>
-    public static async Task Test_C03_ShutdownDuringStartingAndInitFailure()
+    public static async Task Test_C03_ShutdownDuringStartingAndInitFailure(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
         // 场景 A: Starting 中收到关闭请求
         {
-            await using var engine = new FakeAriaEngine();
+            await using var engine = engineFactory(null);
             var startingGate = new TaskCompletionSource();
             var allowStartingToProceed = new TaskCompletionSource();
 
@@ -132,7 +135,7 @@ public static class ContractTests
 
         // 场景 B: 初始化步骤抛出异常，进入 Faulted 终态
         {
-            await using var engine = new FakeAriaEngine();
+            await using var engine = engineFactory(null);
             var initEx = new InvalidOperationException("Native library init failed: code -1");
             engine.OnStartingHook = () => throw initEx;
 
@@ -157,8 +160,9 @@ public static class ContractTests
     /// 通过条件: 停止接纳，已接纳操作有明确结果；循环完成停机与保存，等待者不悬挂，线程退出。
     /// 依据: BOUNDARIES.md §2, §7; LIBARIA2_ARCHITECTURE_PLAN.md §4.3
     /// </summary>
-    public static async Task Test_C04_ShutdownWithFullQueueAndDeadline()
+    public static async Task Test_C04_ShutdownWithFullQueueAndDeadline(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
         var config = new EngineRuntimeConfig
         {
             CommandQueueCapacity = 8,
@@ -167,7 +171,7 @@ public static class ContractTests
             ShutdownTimeout = TimeSpan.FromMilliseconds(200)
         };
 
-        await using var engine = new FakeAriaEngine(config);
+        await using var engine = engineFactory(config);
         await engine.StartAsync(CreateTestStartOptions());
         Assert.Equal(EngineState.Ready, engine.State);
 
@@ -217,9 +221,10 @@ public static class ContractTests
     /// C06: 非法 GID/选项、下载错误、fatal 注入
     /// 通过条件: 前两类只影响请求/任务，后续有效命令可执行；fatal 完成未决请求并拒绝新命令，不自动重启。
     /// </summary>
-    public static async Task Test_C06_CommandErrorsAndFatalFaultInjection()
+    public static async Task Test_C06_CommandErrorsAndFatalFaultInjection(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
-        await using var engine = new FakeAriaEngine();
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
+        await using var engine = engineFactory(null);
         await engine.StartAsync(CreateTestStartOptions());
 
         // 1. 命令错误（例如非法 GID）只影响该命令本身，不使引擎 Faulted
@@ -253,9 +258,10 @@ public static class ContractTests
     /// C07: 取消与接纳/开始竞态、调用方超时
     /// 通过条件: 执行前取消无副作用；执行后真实结果可查询；超时不伪造取消、不自动重加，TCS 只完成一次。
     /// </summary>
-    public static async Task Test_C07_CancellationRaceAndCallerTimeout()
+    public static async Task Test_C07_CancellationRaceAndCallerTimeout(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
-        await using var engine = new FakeAriaEngine();
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
+        await using var engine = engineFactory(null);
         await engine.StartAsync(CreateTestStartOptions());
 
         // 1. 接纳前即已取消：保证不产生副作用，直接抛出 OperationCanceledException
@@ -296,14 +302,18 @@ public static class ContractTests
         var validTask = engine.AddUriAsync(new[] { "https://example.com/quick.zip" });
         var quickGid = await validTask;
         Assert.False(string.IsNullOrWhiteSpace(quickGid));
+
+        await engine.ShutdownAsync();
+        Assert.Equal(EngineState.Stopped, engine.State);
     }
 
     /// <summary>
     /// C08: 持续命令压力、有限并发生产者
     /// 通过条件: native 得到推进，等待者/队列有上限；关闭信号不被满队列困住，continuation 不阻塞 owner。
     /// </summary>
-    public static async Task Test_C08_BoundedQueueAndContinuationIsolation()
+    public static async Task Test_C08_BoundedQueueAndContinuationIsolation(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
         // 配置极小容量队列 (容量为 4)
         var config = new EngineRuntimeConfig
         {
@@ -312,7 +322,7 @@ public static class ContractTests
             LoopTimeout = TimeSpan.FromMilliseconds(50)
         };
 
-        await using var engine = new FakeAriaEngine(config);
+        await using var engine = engineFactory(config);
 
         // 阻塞 owner 线程以填满队列
         var ownerBlocker = new TaskCompletionSource();
@@ -326,24 +336,29 @@ public static class ContractTests
         var tasks = new List<Task<string>>();
         bool queueFullObserved = false;
 
-        for (int i = 0; i < 10; i++)
+        try
         {
-            try
+            for (int i = 0; i < 10; i++)
             {
-                tasks.Add(engine.AddUriAsync(new[] { $"https://example.com/cmd{i}.zip" }));
+                try
+                {
+                    tasks.Add(engine.AddUriAsync(new[] { $"https://example.com/cmd{i}.zip" }));
+                }
+                catch (EngineQueueFullException)
+                {
+                    queueFullObserved = true;
+                    break;
+                }
             }
-            catch (EngineQueueFullException)
-            {
-                queueFullObserved = true;
-                break;
-            }
+
+            Assert.True(queueFullObserved, "Engine should reach queue capacity (4) and reject with EngineQueueFullException.");
         }
-
-        Assert.True(queueFullObserved, "Engine should reach queue capacity (4) and reject with EngineQueueFullException.");
-
-        // 放行 owner 执行，队列被排空推进
-        engine.OnBeforeCommandExecute = null;
-        ownerBlocker.SetResult();
+        finally
+        {
+            // 放行 owner 执行，队列被排空推进
+            engine.OnBeforeCommandExecute = null;
+            ownerBlocker.TrySetResult();
+        }
 
         var gids = await Task.WhenAll(tasks);
         Assert.True(gids.Length >= 4, $"Expected at least 4 commands to succeed, but got {gids.Length}");
@@ -376,9 +391,10 @@ public static class ContractTests
     /// C09: 分页查询与修订号一致性 (F05)
     /// 通过条件: 0、1、101 任务分页准确；支持按状态过滤；返回修订号随变更递增；不固定只截断 100 条。
     /// </summary>
-    public static async Task Test_C09_PagedQueriesAndRevisionConsistency()
+    public static async Task Test_C09_PagedQueriesAndRevisionConsistency(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
-        await using var engine = new FakeAriaEngine();
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
+        await using var engine = engineFactory(null);
         await engine.StartAsync(CreateTestStartOptions());
 
         // 1. 空列表查询
@@ -392,7 +408,7 @@ public static class ContractTests
         var gids = new List<string>();
         for (int i = 0; i < 101; i++)
         {
-            var gid = await engine.AddUriAsync(new[] { $"https://example.com/item-{i}.pkg" });
+            var gid = await engine.AddUriAsync(new[] { $"http://192.0.2.1/item-{i}.pkg" });
             gids.Add(gid);
         }
 
@@ -431,7 +447,7 @@ public static class ContractTests
         Assert.Equal(101, allPagedGids.Distinct().Count());
 
         // 突变操作触发修订号单调递增
-        await engine.AddUriAsync(new[] { "https://example.com/new-mutation.pkg" });
+        await engine.AddUriAsync(new[] { "http://192.0.2.1/new-mutation.pkg" });
         var pageAfterMutation = await engine.GetTasksPagedAsync(TaskStatusFilter.All, 0, 10);
         Assert.True(pageAfterMutation.Revision > page1.Revision);
         Assert.Equal(102, pageAfterMutation.TotalCount);
@@ -466,9 +482,10 @@ public static class ContractTests
     /// C10: 全局与单任务实际选项读取和变更 (F04)
     /// 通过条件: 初始选项可读；任务选项与全局继承正确；修改后可读取最新值；非法 GID 抛出 EngineCommandException。
     /// </summary>
-    public static async Task Test_C10_OptionsInspectionAndRealValues()
+    public static async Task Test_C10_OptionsInspectionAndRealValues(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
-        await using var engine = new FakeAriaEngine();
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
+        await using var engine = engineFactory(null);
         var startOptions = new EngineStartOptions
         {
             SessionFilePath = Path.Combine(Path.GetTempPath(), $"test-session-{Guid.NewGuid():N}.session"),
@@ -533,9 +550,10 @@ public static class ContractTests
     /// 通过条件: 完整保留同一选项名称的多次出现（如多个 header）；支持提取所有 header 值；
     ///           严格拒绝非法控制字符 (CRLF注入、\0空字符) 与超大选项 (>8 KiB)。
     /// </summary>
-    public static async Task Test_C11_MultiValueRepeatedHeaders()
+    public static async Task Test_C11_MultiValueRepeatedHeaders(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
-        await using var engine = new FakeAriaEngine();
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
+        await using var engine = engineFactory(null);
         await engine.StartAsync(CreateTestStartOptions());
 
         var repeatedOptions = new List<KeyValuePair<string, string>>
@@ -611,9 +629,10 @@ public static class ContractTests
     /// C12: 操作结果查询与调用方超时解耦 (C07, §6, §8.4, G08-G09)
     /// 通过条件: 可查询 Pending、Completed(含真实 GID)、Failed 操作(含目标 GID)；未知或超期操作返回 Unknown；超时后不重复执行。
     /// </summary>
-    public static async Task Test_C12_OperationOutcomeTrackingAndTimeoutDecoupling()
+    public static async Task Test_C12_OperationOutcomeTrackingAndTimeoutDecoupling(Func<EngineRuntimeConfig?, ITestHookableEngine>? engineFactory = null)
     {
-        await using var engine = new FakeAriaEngine();
+        engineFactory ??= cfg => new FakeAriaEngine(cfg);
+        await using var engine = engineFactory(null);
         await engine.StartAsync(CreateTestStartOptions());
 
         // 1. 验证正常完成的操作结果登记
