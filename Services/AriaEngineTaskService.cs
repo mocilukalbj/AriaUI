@@ -115,7 +115,8 @@ public class AriaEngineTaskService : IAriaTaskService
                 ["max-overall-download-limit"] = Math.Max(0, settings.MaxOverallDownloadLimit).ToString(),
                 ["max-overall-upload-limit"] = Math.Max(0, settings.MaxOverallUploadLimit).ToString(),
                 ["split"] = Math.Max(1, settings.Split).ToString(),
-                ["max-connection-per-server"] = Math.Max(1, settings.Split).ToString(),
+                ["max-connection-per-server"] = Math.Max(1, settings.MaxConnectionPerServer).ToString(),
+                ["check-certificate"] = settings.AllowInvalidCert ? "false" : "true",
                 ["continue"] = "true",
                 ["enable-rpc"] = "false"
             };
@@ -554,7 +555,8 @@ public class AriaEngineTaskService : IAriaTaskService
                     new("max-overall-download-limit", Math.Max(0, currentSettings.MaxOverallDownloadLimit).ToString()),
                     new("max-overall-upload-limit", Math.Max(0, currentSettings.MaxOverallUploadLimit).ToString()),
                     new("split", Math.Max(1, currentSettings.Split).ToString()),
-                    new("max-connection-per-server", Math.Max(1, currentSettings.Split).ToString())
+                    new("max-connection-per-server", Math.Max(1, currentSettings.MaxConnectionPerServer).ToString()),
+                    new("check-certificate", currentSettings.AllowInvalidCert ? "false" : "true")
                 };
 
                 if (!string.IsNullOrWhiteSpace(currentSettings.DefaultDownloadDir))
@@ -562,11 +564,18 @@ public class AriaEngineTaskService : IAriaTaskService
                     options.Add(new KeyValuePair<string, string>("dir", currentSettings.DefaultDownloadDir));
                 }
 
-                await _engine.ChangeGlobalOptionAsync(options, cancellationToken);
+                try
+                {
+                    await _engine.ChangeGlobalOptionAsync(options, cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw new SettingsApplicationException("配置已保存，但应用到 aria2 运行态失败。", ex);
+                }
 
                 if (currentSettings.EnableBtTrackers && !string.IsNullOrWhiteSpace(currentSettings.CustomTrackersUrl))
                 {
-                    await UpdateTrackersAsync(cancellationToken);
+                    await UpdateTrackersCoreAsync(cancellationToken);
                 }
             }
         }
@@ -579,13 +588,36 @@ public class AriaEngineTaskService : IAriaTaskService
     public async Task UpdateTrackersAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        await _settingsLock.WaitAsync(cancellationToken);
+        try
+        {
+            ThrowIfDisposed();
+            await UpdateTrackersCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _settingsLock.Release();
+        }
+    }
+
+    private async Task UpdateTrackersCoreAsync(CancellationToken cancellationToken)
+    {
         var settings = _settingsService.Settings;
         if (!settings.EnableBtTrackers || string.IsNullOrWhiteSpace(settings.CustomTrackersUrl))
         {
             return;
         }
 
-        var trackers = await _trackerService.FetchTrackersAsync(settings.CustomTrackersUrl, cancellationToken);
+        List<string> trackers;
+        try
+        {
+            trackers = await _trackerService.FetchTrackersAsync(settings.CustomTrackersUrl, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new SettingsApplicationException("获取 BT Tracker 列表失败:", ex);
+        }
+
         var combinedTrackers = new HashSet<string>(trackers, StringComparer.OrdinalIgnoreCase);
 
         if (!string.IsNullOrWhiteSpace(settings.ExtraTrackers))
@@ -601,11 +633,25 @@ public class AriaEngineTaskService : IAriaTaskService
 
         if (combinedTrackers.Count > 0)
         {
-            var trackerString = string.Join(",", combinedTrackers);
-            await _engine.ChangeGlobalOptionAsync(new[]
+            var updatedSettings = settings.Clone();
+            updatedSettings.ExtraTrackers = string.Join("\n", combinedTrackers);
+            await _settingsService.SaveAsync(updatedSettings);
+
+            if (_engine.State == EngineState.Ready)
             {
-                new KeyValuePair<string, string>("bt-tracker", trackerString)
-            }, cancellationToken);
+                var trackerString = string.Join(",", combinedTrackers);
+                try
+                {
+                    await _engine.ChangeGlobalOptionAsync(new[]
+                    {
+                        new KeyValuePair<string, string>("bt-tracker", trackerString)
+                    }, cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    throw new SettingsApplicationException("Tracker 列表已保存，但应用到 aria2 运行态失败。", ex);
+                }
+            }
         }
     }
 

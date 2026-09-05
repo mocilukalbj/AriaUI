@@ -80,46 +80,56 @@ public static class HistoricalRegressionTests
     /// </summary>
     public static void Test_F04_F07_SettingsValidationAndNormalization()
     {
-        // 1. 空下载目录及边界校验
+        // 1. 空下载目录及默认配置校验
         var settings = new AppSettings
         {
-            RpcPort = 6800,
-            RpcHost = "127.0.0.1",
-            RpcSecret = "valid_secret_123",
-            AutoStartDaemon = true,
             DefaultDownloadDir = ""
         };
 
         var errors = settings.Validate();
         Assert.Equal(0, errors.Count);
 
-        // 2. 非法端口 (0, 70000)
-        settings.RpcPort = 0;
+        // 2. 最大并行任务数边界 (1-64)
+        settings.MaxConcurrentDownloads = 0;
         Assert.True(settings.Validate().Count > 0);
-        settings.RpcPort = 70000;
+        settings.MaxConcurrentDownloads = 65;
         Assert.True(settings.Validate().Count > 0);
-        settings.RpcPort = 6800;
+        settings.MaxConcurrentDownloads = 5;
 
-        // 3. 托管 daemon 拒绝特权端口 (< 1024)
-        settings.RpcPort = 80;
+        // 3. 单服务器最大连接数边界 (1-64)
+        settings.MaxConnectionPerServer = 0;
         Assert.True(settings.Validate().Count > 0);
-        settings.RpcPort = 6800;
+        settings.MaxConnectionPerServer = 65;
+        Assert.True(settings.Validate().Count > 0);
+        settings.MaxConnectionPerServer = 16;
 
-        // 4. 托管 daemon 拒绝非 loopback 地址
-        settings.RpcHost = "192.168.1.100";
+        // 4. 文件分片数边界 (1-64)
+        settings.Split = 0;
         Assert.True(settings.Validate().Count > 0);
-        settings.RpcHost = "127.0.0.1";
+        settings.Split = 65;
+        Assert.True(settings.Validate().Count > 0);
+        settings.Split = 16;
 
-        // 5. 托管 daemon 拒绝 TLS (未配置证书)
-        settings.RpcUseTls = true;
+        // 5. 限速不能为负数
+        settings.MaxOverallDownloadLimit = -1;
         Assert.True(settings.Validate().Count > 0);
-        settings.RpcUseTls = false;
+        settings.MaxOverallDownloadLimit = 0;
 
-        // 6. RpcSecret 空白或包含换行
-        settings.RpcSecret = "secret\nwith_newline";
+        settings.MaxOverallUploadLimit = -1;
         Assert.True(settings.Validate().Count > 0);
-        settings.RpcSecret = "   trimmed_spaces   ";
+        settings.MaxOverallUploadLimit = 0;
+
+        // 6. 主题模式校验 (System, Dark, Light)
+        settings.ThemeMode = "InvalidTheme";
         Assert.True(settings.Validate().Count > 0);
+        settings.ThemeMode = "Dark";
+        Assert.Equal(0, settings.Validate().Count);
+
+        // 7. Tracker 订阅 URL 校验 (http/https)
+        settings.CustomTrackersUrl = "ftp://invalid-url.com";
+        Assert.True(settings.Validate().Count > 0);
+        settings.CustomTrackersUrl = "https://raw.githubusercontent.com/trackers.txt";
+        Assert.Equal(0, settings.Validate().Count);
     }
 
     /// <summary>

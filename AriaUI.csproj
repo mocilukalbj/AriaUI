@@ -5,11 +5,6 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <UseNativeEngine Condition="'$(UseNativeEngine)' == ''">true</UseNativeEngine>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(UseNativeEngine)' == 'true'">
-    <DefineConstants>$(DefineConstants);USE_NATIVE_ENGINE</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

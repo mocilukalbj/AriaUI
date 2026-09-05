@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -66,7 +65,7 @@ public class SettingsService : ISettingsService
             throw;
         }
 
-        var changed = EnsureSecretAndDir();
+        var changed = EnsureDefaultDownloadDir(_settings);
         ValidateLoadedSettings();
         if (changed)
         {
@@ -87,19 +86,6 @@ public class SettingsService : ISettingsService
             SetPrivateFileMode(badConfig);
             Console.Error.WriteLine($"[SettingsService] Corrupted config file backed up to: {badConfig}");
         }
-    }
-
-    private bool EnsureSecretAndDir()
-    {
-        var changed = false;
-
-        if (string.IsNullOrWhiteSpace(_settings.RpcSecret))
-        {
-            _settings.RpcSecret = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-            changed = true;
-        }
-
-        return EnsureDefaultDownloadDir(_settings) || changed;
     }
 
     private static bool EnsureDefaultDownloadDir(AppSettings settings)

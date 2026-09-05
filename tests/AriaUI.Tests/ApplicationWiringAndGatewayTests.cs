@@ -36,10 +36,7 @@ public static class ApplicationWiringAndGatewayTests
 
     private sealed class MockSettingsService : ISettingsService
     {
-        public AppSettings Settings { get; set; } = new()
-        {
-            RpcSecret = "valid_secret_123"
-        };
+        public AppSettings Settings { get; set; } = new();
 
         public Task SaveAsync(AppSettings settings)
         {
@@ -59,9 +56,14 @@ public static class ApplicationWiringAndGatewayTests
     private sealed class MockTrackerService : ITrackerService
     {
         public List<string> TrackersToReturn { get; set; } = new() { "http://tracker.example.com/announce" };
+        public bool ShouldThrow { get; set; }
 
         public Task<List<string>> FetchTrackersAsync(string url, CancellationToken cancellationToken = default)
         {
+            if (ShouldThrow)
+            {
+                throw new InvalidOperationException("Simulated tracker fetch network failure");
+            }
             return Task.FromResult(TrackersToReturn);
         }
     }
@@ -126,11 +128,33 @@ public static class ApplicationWiringAndGatewayTests
             var newSettings = settingsService.Settings.Clone();
             newSettings.MaxConcurrentDownloads = 6;
             newSettings.MaxOverallDownloadLimit = 2097152;
+            newSettings.EnableBtTrackers = true;
+            newSettings.CustomTrackersUrl = "https://example.com/trackers.txt";
             await taskService.SaveAndApplySettingsAsync(newSettings);
 
             var globalOpts = await engine.GetGlobalOptionAsync();
             Assert.Equal("6", globalOpts["max-concurrent-downloads"]);
             Assert.Equal("2097152", globalOpts["max-overall-download-limit"]);
+            Assert.Contains("http://tracker.example.com/announce", settingsService.Settings.ExtraTrackers);
+
+            // 5.1 Standalone UpdateTrackersAsync with persistence
+            trackerService.TrackersToReturn = new List<string> { "http://tracker2.example.com/announce" };
+            await taskService.UpdateTrackersAsync();
+            Assert.Contains("http://tracker2.example.com/announce", settingsService.Settings.ExtraTrackers);
+
+            // 5.2 SettingsApplicationException wrapping on failure
+            trackerService.ShouldThrow = true;
+            bool threwAppEx = false;
+            try
+            {
+                await taskService.UpdateTrackersAsync();
+            }
+            catch (SettingsApplicationException)
+            {
+                threwAppEx = true;
+            }
+            Assert.True(threwAppEx, "UpdateTrackersAsync must throw SettingsApplicationException on failure.");
+            trackerService.ShouldThrow = false;
 
             // 6. Remove Task with Delete File Protection (F03)
             var dummyFile = Path.Combine(tempDir, "file.bin");

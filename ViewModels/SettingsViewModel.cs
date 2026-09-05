@@ -15,24 +15,6 @@ public partial class SettingsViewModel : ViewModelBase
     private readonly IAriaTaskService _taskService;
 
     [ObservableProperty]
-    private bool _autoStartDaemon;
-
-    [ObservableProperty]
-    private string _aria2ExecutablePath = string.Empty;
-
-    [ObservableProperty]
-    private string _rpcHost = "127.0.0.1";
-
-    [ObservableProperty]
-    private decimal _rpcPort = 6800;
-
-    [ObservableProperty]
-    private bool _rpcUseTls;
-
-    [ObservableProperty]
-    private string _rpcSecret = string.Empty;
-
-    [ObservableProperty]
     private string _defaultDownloadDir = string.Empty;
 
     [ObservableProperty]
@@ -89,12 +71,6 @@ public partial class SettingsViewModel : ViewModelBase
     public void LoadFromSettings()
     {
         var s = _settingsService.Settings;
-        AutoStartDaemon = s.AutoStartDaemon;
-        Aria2ExecutablePath = s.Aria2ExecutablePath;
-        RpcHost = s.RpcHost;
-        RpcPort = s.RpcPort;
-        RpcUseTls = s.RpcUseTls;
-        RpcSecret = s.RpcSecret;
         DefaultDownloadDir = s.DefaultDownloadDir;
         MaxConcurrentDownloads = s.MaxConcurrentDownloads;
         MaxConnectionPerServer = s.MaxConnectionPerServer;
@@ -118,12 +94,6 @@ public partial class SettingsViewModel : ViewModelBase
         {
             var newSettings = new AppSettings
             {
-                AutoStartDaemon = AutoStartDaemon,
-                Aria2ExecutablePath = Aria2ExecutablePath,
-                RpcHost = RpcHost,
-                RpcPort = (int)RpcPort,
-                RpcUseTls = RpcUseTls,
-                RpcSecret = RpcSecret,
                 DefaultDownloadDir = DefaultDownloadDir,
                 MaxConcurrentDownloads = (int)MaxConcurrentDownloads,
                 MaxConnectionPerServer = (int)MaxConnectionPerServer,

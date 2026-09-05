@@ -13,7 +13,7 @@
             <!-- Header -->
             <StackPanel Spacing="4">
                 <TextBlock Text="设置中心" FontSize="22" FontWeight="Bold"/>
-                <TextBlock Text="配置 Aria2 引擎、RPC 连接、下载偏好及 BT Tracker 订阅"
+                <TextBlock Text="配置下载偏好、网络规则及 BT Tracker 订阅"
                            FontSize="13"
                            Foreground="{DynamicResource SemiColorText2}"/>
             </StackPanel>
@@ -50,58 +50,7 @@
                 </StackPanel>
             </Border>
 
-            <!-- Section 1: Aria2 Daemon & RPC -->
-            <Border Background="{DynamicResource SemiColorBackground1}"
-                    BorderBrush="{DynamicResource SemiColorBorder}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="20">
-                <StackPanel Spacing="16">
-                    <TextBlock Text="Aria2 核心与 RPC 服务" FontSize="16" FontWeight="SemiBold"/>
-
-                    <CheckBox IsChecked="{Binding AutoStartDaemon}"
-                              Content="自动管理并启动本地 aria2c 守护进程"/>
-
-                    <CheckBox IsChecked="{Binding AllowInvalidCert}"
-                              Content="aria2 下载允许无效 TLS 证书 (--check-certificate=false)"/>
-
-                    <CheckBox IsChecked="{Binding RpcUseTls}"
-                              Content="外部 RPC 使用 TLS (wss/https；需关闭本地 daemon 自动管理)"/>
-
-                    <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto,Auto" Margin="0,4,0,0">
-                        <!-- Custom Executable Path -->
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="aria2c 路径:" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="0" Grid.Column="1"
-                                 Text="{Binding Aria2ExecutablePath, Mode=TwoWay}"
-                                 PlaceholderText="留空则自动检测 (~/.local/bin 或系统 PATH)"
-                                 Margin="0,0,0,10"/>
-
-                        <!-- RPC Host -->
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="RPC 地址:" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="1" Grid.Column="1"
-                                 Text="{Binding RpcHost, Mode=TwoWay}"
-                                 Margin="0,0,0,10"/>
-
-                        <!-- RPC Port -->
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="RPC 端口:" VerticalAlignment="Center"/>
-                        <NumericUpDown Grid.Row="2" Grid.Column="1"
-                                       Value="{Binding RpcPort}"
-                                       FormatString="0"
-                                       Minimum="1"
-                                       Maximum="65535"
-                                       Margin="0,0,0,10"/>
-
-                        <!-- RPC Secret -->
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="RPC 密钥 (Secret):" VerticalAlignment="Center"/>
-                        <TextBox Grid.Row="3" Grid.Column="1"
-                                 Text="{Binding RpcSecret, Mode=TwoWay}"
-                                 PasswordChar="•"
-                                 PlaceholderText="RPC Token 鉴权密钥"/>
-                    </Grid>
-                </StackPanel>
-            </Border>
-
-            <!-- Section 2: Download Rules & Limits -->
+            <!-- Section 1: Download Rules & Limits -->
             <Border Background="{DynamicResource SemiColorBackground1}"
                     BorderBrush="{DynamicResource SemiColorBorder}"
                     BorderThickness="1"
@@ -109,6 +58,9 @@
                     Padding="20">
                 <StackPanel Spacing="16">
                     <TextBlock Text="下载偏好与网络规则" FontSize="16" FontWeight="SemiBold"/>
+
+                    <CheckBox IsChecked="{Binding AllowInvalidCert}"
+                              Content="aria2 下载允许无效 TLS 证书 (--check-certificate=false)"/>
 
                     <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" Margin="0,4,0,0">
                         <!-- Default Download Dir -->
@@ -153,7 +105,7 @@
                 </StackPanel>
             </Border>
 
-            <!-- Section 3: BT Trackers -->
+            <!-- Section 2: BT Trackers -->
             <Border Background="{DynamicResource SemiColorBackground1}"
                     BorderBrush="{DynamicResource SemiColorBorder}"
                     BorderThickness="1"

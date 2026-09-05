@@ -13,7 +13,7 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         Console.WriteLine("=================================================");
-        Console.WriteLine(" AriaUI Test Runner (LIBARIA2_TEST_PLAN Phase 2) ");
+        Console.WriteLine(" AriaUI Test Runner (LIBARIA2_TEST_PLAN Phase 5) ");
         Console.WriteLine("=================================================");
         Console.WriteLine($"Timestamp: {DateTime.UtcNow:O}");
         Console.WriteLine($"Platform:  {Environment.OSVersion} ({System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture})");
@@ -64,21 +64,6 @@ public static class Program
             new("F04", "REVIEW #50/#52/#59: 设置多级校验、空目录规范化与配置隔离", () => { HistoricalRegressionTests.Test_F04_F07_SettingsValidationAndNormalization(); return Task.CompletedTask; }),
             new("F03", "REVIEW #54: 任务删除前本地文件路径与安全目录校验", () => { HistoricalRegressionTests.Test_F03_TaskRemovalPathProtection(); return Task.CompletedTask; }),
             new("U01", "REVIEW #58: TaskListView 筛选按钮派生布尔属性与属性变更通知", () => { HistoricalRegressionTests.Test_U01_TaskListFilterSelectionState(); return Task.CompletedTask; }),
-
-            // --- BOUNDARIES.md Section 8: RPC Baseline Regressions (B01, B02, B03, B04, B05) ---
-            new("B01", "BOUNDARIES §8.1: ProcessIncomingMessage 脏帧注入与接收循环存活", () => { RpcBaselineRegressionTests.Test_RPC_DirtyFrameResilience(); return Task.CompletedTask; }),
-            new("B02", "BOUNDARIES §8.2: PollLoopAsync 单轮故障隔离与轮询循环存活", RpcBaselineRegressionTests.Test_RPC_PollingTickFailureResilience),
-            new("B03", "BOUNDARIES §8.3: 瞬断后 3s 内独立重连恢复快照 (不依赖轮询存活)", RpcBaselineRegressionTests.Test_RPC_TransientDisconnectReconnectWithin3sAndRestoreSnapshot),
-            new("B04", "BOUNDARIES §8.3: 初始连接失败自动重连与快照恢复", RpcBaselineRegressionTests.Test_RPC_InitialConnectFailureAutoReconnectsWhenServerOnline),
-            new("B05", "BOUNDARIES §8.3 & §7: 任务服务关闭时确定性取消并等待重连任务", RpcBaselineRegressionTests.Test_RPC_ShutdownAwaitsReconnectTask),
-
-            // --- LIBARIA2_TEST_PLAN.md §4: M01 Real RPC Performance & Resource Baseline ---
-            new("M01", "LIBARIA2_TEST_PLAN §4: 真实 RPC 启动、命令延迟(3轮x1000次)与资源基线测量", async () =>
-            {
-                var report = await M01RpcBaselineBenchmark.RunBenchmarkAsync(startupIterations: 30, commandIterations: 1000);
-                Assert.True(report.EmptyStartup.P95Ms < 500, $"Empty startup P95 should meet 500ms experimental target, got {report.EmptyStartup.P95Ms}ms");
-                Assert.True(report.GlobalStatBenchmark.MedianP95Ms > 0, "Median P95 command latency must be recorded");
-            }),
 
             // --- LIBARIA2_TEST_PLAN.md §5: Phase 1 Native Probe (P01) ---
             new("P01", "阶段 1 原生探针：libaria2 + C ABI bridge 构建与 keepRunning/RUN_ONCE/CPU 实测", async () =>
@@ -134,9 +119,26 @@ public static class Program
             new("S03", "S03: Native C ABI 边界、对齐与 ASan/UBSan 内存安全诊断", RecoveryAndStabilityTests.Test_S03_NativeMemoryDiagnostics),
         };
 
-        if (args.Length > 0)
+        var filterPatterns = new List<string>();
+        for (int i = 0; i < args.Length; i++)
         {
-            testCases = testCases.Where(t => args.Any(a => t.Id.Contains(a, StringComparison.OrdinalIgnoreCase))).ToList();
+            var arg = args[i];
+            if (arg.Equals("--filter", StringComparison.OrdinalIgnoreCase) || arg.Equals("-f", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Length)
+                {
+                    filterPatterns.Add(args[++i]);
+                }
+            }
+            else if (!arg.StartsWith("-"))
+            {
+                filterPatterns.Add(arg);
+            }
+        }
+
+        if (filterPatterns.Count > 0 && !filterPatterns.Any(p => p.Equals("all", StringComparison.OrdinalIgnoreCase) || p == "*"))
+        {
+            testCases = testCases.Where(t => filterPatterns.Any(p => t.Id.Contains(p, StringComparison.OrdinalIgnoreCase))).ToList();
         }
 
         int passed = 0;

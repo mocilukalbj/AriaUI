@@ -37,7 +37,6 @@ public partial class App : Application
         collection.AddSingleton<IFileSystemService, FileSystemService>();
         collection.AddSingleton<ITrackerService>(_ => new TrackerService());
 
-#if USE_NATIVE_ENGINE
         NativeAriaEngineHost.ConfigureNativeResolution();
         collection.AddSingleton<IAriaEngine>(sp =>
         {
@@ -47,11 +46,6 @@ public partial class App : Application
         });
         collection.AddSingleton<IAriaTaskService, AriaEngineTaskService>();
         collection.AddSingleton<AppGatewayService>();
-#else
-        collection.AddSingleton<IAriaProcessService, AriaProcessService>();
-        collection.AddSingleton<IAriaRpcClient, AriaWebSocketRpcClient>();
-        collection.AddSingleton<IAriaTaskService, AriaTaskService>();
-#endif
 
         // Register Factories (Reflection-free for AOT compatibility)
         collection.AddTransient<NewTaskViewModel>();
@@ -83,12 +77,7 @@ public partial class App : Application
 
             var mainVm = Services.GetRequiredService<MainWindowViewModel>();
             var taskService = Services.GetRequiredService<IAriaTaskService>();
-#if USE_NATIVE_ENGINE
             var gatewayService = Services.GetRequiredService<AppGatewayService>();
-#else
-            var processService = Services.GetRequiredService<IAriaProcessService>();
-            var rpcClient = Services.GetRequiredService<IAriaRpcClient>();
-#endif
 
             var mainWindow = new MainWindow
             {
@@ -99,7 +88,6 @@ public partial class App : Application
             mainWindow.RegisterAsyncShutdownHandler(async () =>
             {
                 var failures = new List<Exception>();
-#if USE_NATIVE_ENGINE
                 try
                 {
                     await gatewayService.DisposeAsync();
@@ -108,7 +96,6 @@ public partial class App : Application
                 {
                     failures.Add(ex);
                 }
-#endif
 
                 try
                 {
@@ -118,27 +105,6 @@ public partial class App : Application
                 {
                     failures.Add(ex);
                 }
-
-#if !USE_NATIVE_ENGINE
-                try
-                {
-                    using var processTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                    await processService.StopDaemonAsync(processTimeoutCts.Token);
-                }
-                catch (Exception ex)
-                {
-                    failures.Add(ex);
-                }
-
-                try
-                {
-                    await rpcClient.DisposeAsync();
-                }
-                catch (Exception ex)
-                {
-                    failures.Add(ex);
-                }
-#endif
 
                 if (failures.Count == 1)
                 {
@@ -157,16 +123,11 @@ public partial class App : Application
             desktop.Exit += (s, e) =>
             {
                 Services?.GetService<IAriaTaskService>()?.Dispose();
-#if USE_NATIVE_ENGINE
                 Services?.GetService<AppGatewayService>()?.DisposeAsync().AsTask().GetAwaiter().GetResult();
-#else
-                Services?.GetService<IAriaProcessService>()?.Dispose();
-#endif
             };
 
             base.OnFrameworkInitializationCompleted();
 
-#if USE_NATIVE_ENGINE
             // Start Gateway & Single-Instance Lock first, then initialize task service
             gatewayService.StartAsync().ContinueWith(gwTask =>
             {
@@ -188,14 +149,6 @@ public partial class App : Application
                     WeakReferenceMessenger.Default.Send(new NotificationMessage($"初始化 Aria2 服务失败: {initEx.Message}", IsError: true));
                 });
             }, TaskScheduler.Default);
-#else
-            // Initialize Task Service asynchronously in background with error observation
-            taskService.InitializeAsync().SafeFireAndForget(ex =>
-            {
-                Console.Error.WriteLine($"[App Initialization Error]: {ex}");
-                WeakReferenceMessenger.Default.Send(new NotificationMessage($"初始化 Aria2 服务失败: {ex.Message}", IsError: true));
-            });
-#endif
         }
         else
         {
