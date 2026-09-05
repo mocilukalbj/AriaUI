@@ -24,7 +24,22 @@ public interface IAriaTaskService : IDisposable
 
     Task InitializeAsync(CancellationToken cancellationToken = default);
     Task RefreshTasksAsync(CancellationToken cancellationToken = default);
-    Task<string> AddUriAsync(string url, string? saveDir = null, int? split = null, string? referer = null, string? userAgent = null, CancellationToken cancellationToken = default);
+    Task<string> AddUriAsync(
+        string url,
+        string? saveDir,
+        int? split,
+        string? referer,
+        string? userAgent,
+        CancellationToken cancellationToken);
+    Task<string> AddUriAsync(
+        string url,
+        string? saveDir = null,
+        int? split = null,
+        string? referer = null,
+        string? userAgent = null,
+        IReadOnlyList<string>? headers = null,
+        string? outFilename = null,
+        CancellationToken cancellationToken = default);
     Task<string> AddTorrentAsync(string filePath, string? saveDir = null, CancellationToken cancellationToken = default);
     Task PauseTaskAsync(string gid, CancellationToken cancellationToken = default);
     Task ResumeTaskAsync(string gid, CancellationToken cancellationToken = default);
@@ -612,12 +627,23 @@ public class AriaTaskService : IAriaTaskService
         }
     }
 
+    public Task<string> AddUriAsync(
+        string url,
+        string? saveDir,
+        int? split,
+        string? referer,
+        string? userAgent,
+        CancellationToken cancellationToken) =>
+        AddUriAsync(url, saveDir, split, referer, userAgent, headers: null, outFilename: null, cancellationToken);
+
     public async Task<string> AddUriAsync(
         string url,
         string? saveDir = null,
         int? split = null,
         string? referer = null,
         string? userAgent = null,
+        IReadOnlyList<string>? headers = null,
+        string? outFilename = null,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -655,6 +681,20 @@ public class AriaTaskService : IAriaTaskService
                     if (!string.IsNullOrWhiteSpace(userAgent))
                     {
                         options["user-agent"] = userAgent;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(outFilename))
+                    {
+                        options["out"] = outFilename;
+                    }
+
+                    if (headers != null && headers.Count > 0)
+                    {
+                        var validHeaders = headers.Where(h => !string.IsNullOrWhiteSpace(h)).ToList();
+                        if (validHeaders.Count > 0)
+                        {
+                            options["header"] = validHeaders;
+                        }
                     }
 
                     var urls = url.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)

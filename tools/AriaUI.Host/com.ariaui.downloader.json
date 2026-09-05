@@ -1,0 +1,9 @@
+{
+  "name": "com.ariaui.downloader",
+  "description": "AriaUI Native Messaging Thin Host",
+  "path": "/home/liubj/文档/proj/AriaUI/tools/AriaUI.Host/bin/Debug/net10.0/AriaUI.Host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://mpkodaoamjmijfonebedmfghbittihdf/"
+  ]
+}

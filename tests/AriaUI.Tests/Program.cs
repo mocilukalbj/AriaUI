@@ -89,6 +89,26 @@ public static class Program
                 Assert.True(report.IdleCpuPercent < 5.0, "Idle CPU should be near zero during RUN_ONCE waiting");
                 Assert.True(report.WrongThreadRejected, "Cross-thread call must be rejected with A2_STATUS_WRONG_THREAD");
             }),
+
+            // --- Phase 3 Step 1: Application Wiring & Lifecycle ---
+            new("Step1/Wiring", "Step 1: AriaEngineTaskService 完整生命周期 (添加/暂停/恢复/删除/设置/关闭)", ApplicationWiringAndGatewayTests.Test_Step1_ApplicationWiring_CompleteLifecycle),
+            new("Step1/P03", "Step 1 / P03: Native 模式无 aria2c 子进程且无控制端口", ApplicationWiringAndGatewayTests.Test_Step1_NoAria2cSubprocessAndNoControlPort),
+            new("Step1/PerfComp", "Step 1: 同负载同操作(AddUriAsync)端到端真实结果延迟对比", ApplicationWiringAndGatewayTests.Test_Step1_PerformanceComparison_SubmitToRealResult),
+
+            // --- Phase 3 Step 2: Gateway & Protocol Compliance (G01 - G12) ---
+            new("G01", "G01: Manifest/扩展白名单与任意RPC/shell拦截", ApplicationWiringAndGatewayTests.Test_G01_ManifestAndAllowedActions),
+            new("G02", "G02: 32位长度前缀分段读取与坏长度/EOF处理", ApplicationWiringAndGatewayTests.Test_G02_FrameProtocol_ChunkedAndMalformed),
+            new("G03", "G03: 64KiB边界校验、CRLF/NUL注入拦截与路径穿越防护", ApplicationWiringAndGatewayTests.Test_G03_64KiBBoundary_HeaderInjection_PathTraversal),
+            new("G04", "G04: 容量门禁：最多8连接/每扩展10req/s限流/单未决请求", ApplicationWiringAndGatewayTests.Test_G04_CapacityLimits_MaxConnections_RateLimiting),
+            new("G05", "G05: SO_PEERCRED UID隔离与0700/0600权限", ApplicationWiringAndGatewayTests.Test_G05_UidPeerCredentialsAndPermissions),
+            new("G06_G07", "G06/G07: App互斥争锁、冷启动与陈旧Socket清理", ApplicationWiringAndGatewayTests.Test_G06_G07_AppLocking_StaleSocketHandling),
+            new("G08_G09", "G08/G09: 请求去重、载荷冲突检测与1024条缓存容量管理", ApplicationWiringAndGatewayTests.Test_G08_G09_Deduplication_ConflictDetection_CacheCapacity),
+            new("G10_G11", "G10/G11: GET/magnet支持与不支持scheme(POST/blob/data)拒绝", ApplicationWiringAndGatewayTests.Test_G10_G11_GetAndMagnet_UnsupportedSchemes),
+            new("G12", "G12: 宿主断开生命周期退出与App任务执行连续性", ApplicationWiringAndGatewayTests.Test_G12_HostLifecycle_DownloadContinuity),
+
+            // --- Phase 3 Step 3 & End-to-End: Browser Takeover Pipeline ---
+            new("Host/Startup", "Host: 薄宿主标准启动与协议头解析", ApplicationWiringAndGatewayTests.Test_Host_NativeMessagingStartupAndColdStartDiscovery),
+            new("E2E/Takeover", "E2E: 浏览器提交 -> App接收 -> Native返回真实GID -> UI显示任务 -> 确认接管闭环", ApplicationWiringAndGatewayTests.Test_EndToEnd_BrowserTakeoverFlow),
         };
 
         int passed = 0;

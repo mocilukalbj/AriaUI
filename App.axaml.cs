@@ -12,6 +12,8 @@ using Microsoft.Extensions.DependencyInjection;
 using AriaUI.Helpers;
 using AriaUI.Models;
 using AriaUI.Services;
+using AriaUI.Services.Engine;
+using AriaUI.Services.Gateway;
 using AriaUI.ViewModels;
 using AriaUI.Views;
 
@@ -34,9 +36,22 @@ public partial class App : Application
         collection.AddSingleton<ISettingsService, SettingsService>();
         collection.AddSingleton<IFileSystemService, FileSystemService>();
         collection.AddSingleton<ITrackerService>(_ => new TrackerService());
+
+#if USE_NATIVE_ENGINE
+        NativeAriaEngineHost.ConfigureNativeResolution();
+        collection.AddSingleton<IAriaEngine>(sp =>
+        {
+            var config = new EngineRuntimeConfig();
+            config.Validate();
+            return new NativeAriaEngineHost(config);
+        });
+        collection.AddSingleton<IAriaTaskService, AriaEngineTaskService>();
+        collection.AddSingleton<AppGatewayService>();
+#else
         collection.AddSingleton<IAriaProcessService, AriaProcessService>();
         collection.AddSingleton<IAriaRpcClient, AriaWebSocketRpcClient>();
         collection.AddSingleton<IAriaTaskService, AriaTaskService>();
+#endif
 
         // Register Factories (Reflection-free for AOT compatibility)
         collection.AddTransient<NewTaskViewModel>();
@@ -68,8 +83,12 @@ public partial class App : Application
 
             var mainVm = Services.GetRequiredService<MainWindowViewModel>();
             var taskService = Services.GetRequiredService<IAriaTaskService>();
+#if USE_NATIVE_ENGINE
+            var gatewayService = Services.GetRequiredService<AppGatewayService>();
+#else
             var processService = Services.GetRequiredService<IAriaProcessService>();
             var rpcClient = Services.GetRequiredService<IAriaRpcClient>();
+#endif
 
             var mainWindow = new MainWindow
             {
@@ -80,6 +99,17 @@ public partial class App : Application
             mainWindow.RegisterAsyncShutdownHandler(async () =>
             {
                 var failures = new List<Exception>();
+#if USE_NATIVE_ENGINE
+                try
+                {
+                    await gatewayService.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    failures.Add(ex);
+                }
+#endif
+
                 try
                 {
                     await taskService.ShutdownAsync();
@@ -89,6 +119,7 @@ public partial class App : Application
                     failures.Add(ex);
                 }
 
+#if !USE_NATIVE_ENGINE
                 try
                 {
                     using var processTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -107,6 +138,7 @@ public partial class App : Application
                 {
                     failures.Add(ex);
                 }
+#endif
 
                 if (failures.Count == 1)
                 {
@@ -125,17 +157,45 @@ public partial class App : Application
             desktop.Exit += (s, e) =>
             {
                 Services?.GetService<IAriaTaskService>()?.Dispose();
+#if USE_NATIVE_ENGINE
+                Services?.GetService<AppGatewayService>()?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+#else
                 Services?.GetService<IAriaProcessService>()?.Dispose();
+#endif
             };
 
             base.OnFrameworkInitializationCompleted();
 
+#if USE_NATIVE_ENGINE
+            // Start Gateway & Single-Instance Lock first, then initialize task service
+            gatewayService.StartAsync().ContinueWith(gwTask =>
+            {
+                if (gwTask.IsFaulted)
+                {
+                    var ex = gwTask.Exception?.InnerException ?? gwTask.Exception;
+                    if (ex is InvalidOperationException)
+                    {
+                        Console.Error.WriteLine($"[AriaUI Single Instance]: {ex?.Message}");
+                        Avalonia.Threading.Dispatcher.UIThread.Post(() => desktop.Shutdown(0));
+                        return;
+                    }
+                    Console.Error.WriteLine($"[App Gateway Error]: {ex}");
+                }
+
+                taskService.InitializeAsync().SafeFireAndForget(initEx =>
+                {
+                    Console.Error.WriteLine($"[App Initialization Error]: {initEx}");
+                    WeakReferenceMessenger.Default.Send(new NotificationMessage($"初始化 Aria2 服务失败: {initEx.Message}", IsError: true));
+                });
+            }, TaskScheduler.Default);
+#else
             // Initialize Task Service asynchronously in background with error observation
             taskService.InitializeAsync().SafeFireAndForget(ex =>
             {
                 Console.Error.WriteLine($"[App Initialization Error]: {ex}");
                 WeakReferenceMessenger.Default.Send(new NotificationMessage($"初始化 Aria2 服务失败: {ex.Message}", IsError: true));
             });
+#endif
         }
         else
         {
