@@ -34,3 +34,7 @@ logs/
 ## Test / Temporary files
 *.tmp
 *.bak
+
+## Browser Extension Assets (tracked separately)
+Aria2-Explorer-master/
+

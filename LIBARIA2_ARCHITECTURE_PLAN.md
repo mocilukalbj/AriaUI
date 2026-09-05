@@ -1,207 +1,243 @@
-# AriaUI 内嵌 libaria2 架构规划
+# AriaUI 内嵌 libaria2 实施指导
 
-## 1. 决策与边界
+> 更新：2026-09-05。本文规定目标架构，未声明实现已经完成。
+> 测试范围、稳定编号和执行规则见 [LIBARIA2_TEST_PLAN.md](LIBARIA2_TEST_PLAN.md)。既有行为依据见 [REVIEW.md](REVIEW.md)。
 
-- 目标平台仅为 Linux 和 Windows；不规划 macOS 支持。
-- 新架构把 aria2 作为进程内原生库链接，移除 `aria2c` 子进程、WebSocket JSON-RPC、端口探测与认证握手。
-- 项目接受 libaria2 所要求的 GPL-2.0 兼容发布方式，但在首个可分发的 native-linked artifact 落地前，当前代码仍保留 MIT，不提前修改 `LICENSE`。
-- 首次分发链接 libaria2 的构建产物时，必须同步完成许可证切换、第三方声明、对应源码与可复现构建材料。最终 SPDX 标识以锁定版本 aria2 源码中的许可证文本为准。
-- 每个进程只创建一个 aria2 session；不支持同进程多 session，也不提供旧 RPC 后端的长期兼容承诺。
+## 1. 目标与固定边界
 
-## 2. 目标结构
+软件以简洁、高效、故障可定位为目标：下载协议交给 aria2，业务协调留在应用服务，UI 负责交互。只保留必要的边界，不建设通用 RPC 平台、插件框架或第二套下载内核。
 
-```text
-Avalonia Views / ViewModels
-           │
-           ▼
-      IAriaEngine
-           │ async commands / immutable snapshots
-           ▼
- NativeAriaEngineHost
-           │ bounded Channel
-           ▼
- 单一专用线程（唯一 native owner）
-           │ stable C ABI
-           ▼
- ariaui_native_bridge
-           │ C++ API
-           ▼
-        libaria2
-```
+| 编号 | 必须遵守的决定 |
+|---|---|
+| D01 | 本期仅支持 Linux x64，先完成试验版本，再完成分发验收。Windows、其他架构和浏览器商店上架不属于本期门禁。 |
+| D02 | UI 与内核位于同一应用进程，通过托管接口、单一 owner 线程和 C ABI 连接，不使用 aria2c 子进程。 |
+| D03 | 控制链路不创建 TCP/HTTP/WebSocket 监听，不使用 RPC 端口、端口扫描、RPC secret 或失败后的端口降级。 |
+| D04 | 每个应用进程同时只有一个 libaria2 session；全部 native 生命周期与调用由同一专用线程执行；Faulted 后不自动重建 session。 |
+| D05 | fail-fast：立即结束失败操作并暴露真实原因；只有引擎完整性受损才使整个引擎 Faulted。不得吞错、假成功或靠自动重试掩盖故障。 |
+| D06 | 命令、事件、订阅者、网关连接和请求记录都有容量边界；不以无限 Task、等待者或缓存转移背压。 |
+| D07 | 浏览器接管仅使用 Native Messaging + 本用户 Unix Domain Socket；宿主是薄转发器，不能持有下载 session。 |
+| D08 | 保留既有业务保护；原生链接不会自动解决 Tracker SSRF、文件删除、设置生效、重复提交和列表分页。 |
 
-关键约束：
+“无端口”专指控制链路。HTTP/HTTPS 下载出站连接、BitTorrent 监听、DHT UDP 等下载网络行为仍由 aria2 管理，不得为通过无控制端口测试而破坏下载功能。
 
-- UI 和 ViewModel 只依赖 `IAriaEngine`，不得出现 P/Invoke、native handle 或 aria2 C++ 类型。
-- `NativeAriaEngineHost` 拥有专用线程、命令队列、生命周期状态和未完成请求。
-- session 初始化、所有 aria2 操作、`RUN_ONCE` 事件循环及关闭必须发生在同一专用线程。
-- C# 不直接链接 aria2 的 C++ ABI；中间层只导出小而稳定的 C ABI。
-- 不把 `aria2::DownloadHandle*`、STL 容器、C++ 异常或 native 所有权暴露给托管层。
+REVIEW 中 #47–#60 已修复。迁移收益是减少本地控制链路和连接状态，不以“旧实现仍有上述漏洞”为前提。进程内链接失去了进程崩溃隔离，必须接受 native 致命崩溃会结束应用的取舍。
 
-## 3. 托管接口与状态机
-
-`IAriaEngine` 首批能力：
-
-- `StartAsync`、`ShutdownAsync`
-- `AddUriAsync`、`AddTorrentAsync`
-- `PauseAsync`、`ResumeAsync`、`RemoveAsync`
-- `ChangeGlobalOptionsAsync`、`ChangeTaskOptionsAsync`
-- `GetGlobalSnapshotAsync`、`GetTaskSnapshotAsync`、`GetTaskListAsync`
-- 任务变化事件流（新增、进度、暂停、完成、错误、移除）
-
-生命周期严格为：
+## 2. 职责与调用路径
 
 ```text
-Created → Starting → Ready → Stopping → Stopped
-                    ↘ Faulted
+Views / ViewModels ── 应用服务（任务 / 设置 / 生命周期）
+                              ▲                 │
+浏览器扩展                     │                 ▼
+  │ Native Messaging     IRemoteGateway      IAriaEngine
+  ▼                           ▲                 │ 有界 Channel
+薄宿主 ── Unix Domain Socket ──┘                 ▼
+                                     NativeAriaEngineHost
+                                       单一专用 owner 线程
+                                                │ C ABI
+                                                ▼
+                                       ariaui_native_bridge
+                                                │ C++ API
+                                                ▼
+                                            libaria2
 ```
 
-- `StartAsync` 在专用线程完成 `libraryInit`、`sessionNew` 和首次成功的 `RUN_ONCE` 后才完成；这就是唯一的“服务就绪”定义。
-- `Starting` 或 `Faulted` 状态收到业务命令时立即失败，不做等待重试或隐式重启。
-- 致命 native 错误使状态原子切换到 `Faulted`，所有排队和执行中的请求以同一个根因异常结束。
-- `ShutdownAsync` 停止接收新命令，排空已接受命令，执行 `sessionFinal`、`libraryDeinit`，最后完成线程退出；重复调用应幂等。
+- ViewModel 依赖应用服务或 `IAriaEngine` 的托管契约，不接触 P/Invoke、native handle、RPC 类型和传输细节。
+- 应用服务保留添加协调、设置保存与应用、批量结果、文件删除前校验、Tracker 更新和通知。不要把现有 `AriaTaskService` 的业务职责搬进 ViewModel 或 bridge。
+- host 负责线程、状态、命令接纳、请求完成和快照发布，不实现 HTTP、BT 或 Cookie 协议。
+- bridge 负责转换、调用、复制快照和收集事件。保留独立 `run_once` 导出；防误调用靠统一封装和 owner 线程检查，不靠少导出一个函数。
+- 原生回调只复制紧凑事件，不调托管代码、不重入 aria2。查询与进度采样在回调返回后执行。
+- 网关将有限的浏览器请求转换为已有应用服务调用，不开放任意内核命令。
 
-专用线程循环的固定顺序为：
+## 3. 阶段 0 必须完成能力映射
 
-1. 排空一批已入队命令并逐条执行。
-2. 调用一次非阻塞 `RUN_ONCE`。
-3. 从 native 事件队列复制事件并发布不可变快照。
-4. 若无工作，以有限等待阻塞到命令、事件循环截止时间或关闭信号。
+锁定 aria2 tag、commit 和构建选项，依据该版本头文件、源码与探针填完映射。以下是托管能力要求，不代表上游一定存在同名 API。缺失能力必须确定应用层方案或明确缩减功能，不能迁完 UI 才发现缺口，也不能退回开 RPC 端口。
 
-不得在 UI 线程、线程池回调或事件订阅者中调用 libaria2。
+| 能力 | 契约要求 |
+|---|---|
+| 启停 | `StartAsync(EngineStartOptions)`、`ShutdownAsync`；启动选项显式包含持久化路径和间隔。 |
+| 添加 | `AddUriAsync`、`AddTorrentAsync` 返回真实 GID；区分一个任务的镜像 URI 与多个独立任务；批量逐项返回结果，不承诺事务。 |
+| 暂停 / 恢复 | 区分命令接受与状态实际改变，以随后快照确认，不能伪造即时完成。 |
+| 移除 / 清理历史 | 区分活动、等待任务移除与完成、错误、已移除记录清理；确认 native 对应能力。删除本地文件前先校验路径，并确认引擎已停止该任务的文件访问。 |
+| 查询 | 全局、单任务和分页列表快照，不固定只取前 100 项。列表改变时提供修订号或明确的重新分页语义，不假装跨页原子一致。 |
+| 选项 | 全局/任务更新与实际值读取；固定热更新、下次任务生效、需重启应用的分类。保存成功但应用失败须如实报告。 |
+| 批量操作 | 暂停全部、恢复全部、清理历史复用单项语义，报告部分成功，不增加第二条调度路径。 |
+| 持久化 | 启动加载、周期保存、关闭保存和失败报告。额外 `SaveSessionAsync` 是否需要及如何实现由锁定版本能力决定，不能虚构 API。 |
+| 状态 | 原生状态事件加定时快照，不假定 aria2 提供连续进度回调；处理磁链元数据任务与后续下载 GID 的关联。 |
 
-## 4. C ABI 与内存契约
+核心命令、查询、关闭和恢复映射未完成，阶段 0 不退出。RPC 对照只覆盖共同业务语义；RPC 断线代际与原生线程约束分别测试，不强求传输行为相同。
 
-原生桥接层使用版本化导出，例如：
+## 4. 生命周期与调度
 
-```c
-ariaui_status ariaui_engine_create(const ariaui_engine_options* options);
-ariaui_status ariaui_engine_run_once(void);
-ariaui_status ariaui_engine_execute(const ariaui_command* command,
-                                    ariaui_result_buffer* result);
-ariaui_status ariaui_engine_drain_events(ariaui_event_buffer* events);
-ariaui_status ariaui_engine_destroy(void);
-```
+### 4.1 状态契约
 
-ABI 规则：
+正常路径为 `Created → Starting → Ready → Stopping → Stopped`。Starting、Ready、Stopping 遇到致命引擎错误均可进入终态 Faulted。
 
-- 所有结构体以 `size`、`version` 开头，只使用定宽整数、字节指针和长度；禁止 `bool`、`wchar_t`、STL 类型跨边界。
-- 文本统一为 UTF-8，并始终携带显式长度，不依赖 NUL 终止。
-- 字符串、数组和 DTO 在调用返回前复制到调用方提供的缓冲区；需要扩容时返回所需大小，由托管方重新分配后重试。
-- 任何 native 指针仅在当前 ABI 调用期间有效，托管层不得缓存。托管侧只持有 GID、命令 ID 等值类型标识。
-- DTO 是只读快照，不允许托管层直接修改 aria2 内部对象。
-- C++ 异常只允许在最外层 C ABI 边界被转换为明确的 fatal status；不得吞掉异常或伪造默认业务结果。
+- 重复启动在 Starting 时共享启动结果，在 Ready 时成功返回；Stopped/Faulted 后不复用该 host。
+- 业务命令仅在 Ready 接纳，其他状态立即返回明确状态错误。
+- 就绪要求初始化、session 创建、恢复加载和首次运行推进成功，且 session 可继续接纳任务；不能把空任务自然结束误判为 Ready。
+- 必须配置 `keepRunning=true`：官方默认 `keepRunning=false` 时无任务即 `run()` 返回 0（等同无 RPC 的 aria2c 行为），会被误判为正常结束；本应用要求空任务常驻 Ready，具体行为以锁定版本探针验证为准。
+- 信号由应用接管：关闭 libaria2 默认信号处理（`useSignalHandler=false`，按锁定版本字段名验证），SIGTERM/退出统一走应用关闭流程，避免与 Avalonia 生命周期抢信号；具体设置按锁定版本验证。
+- Starting 中关闭：记录停止请求，不再发布 Ready；当前 native 调用返回后按初始化进度清理，启动请求以“启动被关闭”结束。
+- Created 中关闭直接进入 Stopped。重复关闭共享同一结果，包括首次关闭的失败结果。
 
-事件回调规则：
+### 4.2 运行循环
 
-- aria2 回调只把紧凑事件复制进预分配的 native 有界队列，不执行业务逻辑，不调用托管代码，也不重入 aria2。
-- 高频进度事件允许按 GID 合并；完成、错误、移除等状态转换不得静默丢弃。
-- 不可合并事件溢出视为致命错误并使 engine `Faulted`，从而尽早暴露容量或消费速度问题。
+`RUN_ONCE` 不等于非阻塞调用。官方示例说明它可等待一次事件轮询，默认超时约一秒——这直接影响命令响应延迟和 500ms 就绪目标（§4.1 的循环调度依赖此外提）。因此循环设计在阶段 1 探针结论出来前不冻结：先用最小探针确定锁定版本的轮询等待策略、空闲 CPU 和命令延迟，再定批量/时间预算与采样频率。
 
-## 5. 并发、取消与背压
+阶段 1 探针必须回答（写入受版本控制的运行配置，调优参数不改变契约）：
 
-- 托管命令进入有界 `Channel`；容量必须显式配置，满载时生产者异步等待，不创建无限队列。
-- 每条命令包含单调递增 ID 和一个 `TaskCompletionSource`，结果只能完成一次。
-- 命令出队前可取消；开始 native 调用后不承诺中断，必须返回真实结果或真实错误，避免状态不明。
-- 调用方超时只结束该调用方的等待，不得悄悄重启 session 或伪造 native 取消。
-- 事件订阅者运行在专用线程之外；慢订阅者不能阻塞事件循环。
-- 快照进入 UI 前合并更新，避免每个下载字节变化都触发 UI 调度。
+1. 实际轮询 API 与等待控制手段：锁定版本是否支持缩短/中断轮询等待的参数或调用；Channel 唤醒能否中断正在执行的 native 调用（默认假设：不能）。
+2. `keepRunning=true` 下空 session 的 `RUN_ONCE` 返回值与 CPU 行为：是否常驻、空闲 CPU 多少。
+3. 命令从入队到 native 开始执行的 p50/p95（含一次 `RUN_ONCE` 等待的影响）。
+4. 关闭信号在 `RUN_ONCE` 等待中的响应延迟。
 
-## 6. 错误模型
+约束：不能以忙轮询满足延迟目标；不能假设 Channel 唤醒可中断 native 调用；无法兼顾延迟与 CPU 时记录瓶颈并停止扩大迁移，不增加跨线程 native 调用或端口。[上游说明](https://aria2.github.io/manual/en/html/libaria2.html)
 
-- C ABI 返回版本化 `ariaui_status`，包含类别、aria2/native 错误码和诊断文本所需长度。
-- 非零 status 在 `NativeAriaEngineHost` 中转换为带操作名、命令 ID、GID 和原始错误码的类型化异常，并向上抛出。
-- 参数错误、ABI 版本不匹配、非法状态和缓冲区协议错误立即失败。
-- 不使用宽泛 `catch` 包裹业务流程，不把异常转换为空列表、`false` 或成功状态。
-- 仅在线程入口保留最终故障边界，用于完成待处理任务、记录根因并进入 `Faulted`；它不得继续运行受损 session。
+owner 每轮：
 
-## 7. 构建、打包与许可证
+1. 执行有限批量命令，同时受本轮耗时预算限制，不无限排空后才推进下载。
+2. 调用一次 `RUN_ONCE`，检查结果；未请求停止时意外结束必须暴露原因。
+3. 复制状态事件，到期采样进度和快照，释放全部临时 handle。
+4. 如需额外等待，仅等待下一轮截止时间或命令/关闭信号；native 已长时间等待后不再无条件 sleep。
 
-- 锁定 aria2 的明确 tag 与 commit；优先以 Git submodule 引入，并记录所有 native 依赖版本、补丁与校验值。
-- `ariaui_native_bridge` 使用 CMake presets 构建；初始发布 RID 仅为 `linux-x64` 和 `win-x64`，其他 Linux/Windows 架构需单独通过验收后增加。
-- 产物按 `runtimes/<rid>/native/` 打包为 `.so` / `.dll`；C# 使用 source-generated `LibraryImport`，启动时校验 ABI 版本。
-- CI 必须从干净环境构建 native bridge、libaria2 和 Native AOT 应用，不依赖开发机已安装的 aria2。
-- 发布记录保存工具链版本、构建参数、依赖清单、校验和及 SBOM；调试符号单独归档。
-- 首个链接产物合入前设置许可证门禁：更新根许可证与 README，保留版权声明，附 aria2 及其依赖的许可证，并提供 GPL 要求的对应源码、补丁和构建脚本。
+轮询等待上限、批量/时间预算、采样频率由阶段 1 探针结论填入运行配置。首次 `RUN_ONCE` 的等待计入 engine Ready 耗时。可以另行记录“session 创建完成／首次轮询调用开始”的时间点，但不得替代 Ready、提前完成 `StartAsync`，或用于宣称达到 500ms 就绪目标。若实测超过目标，在 M01 如实记录原因；500ms 仍为试验目标，不单独阻止正确性阶段退出。它们是调优参数，不改变契约。不能以忙轮询满足延迟目标；无法兼顾时记录瓶颈并停止扩大迁移，不增加跨线程 native 调用或端口。
 
-## 8. 迁移阶段与退出门槛
+### 4.3 关闭与失败清理
 
-### 阶段 0：冻结契约与基线
+1. 原子关闭接纳入口，终止尚未接纳的等待者；关闭信号不占用可能已满的命令队列。
+2. 在配置的关闭期限内处理已接纳命令，期间持续推进循环；已取消且未执行的命令不产生副作用。
+3. owner 请求 libaria2 shutdown，并推进到正常结束，再执行 `sessionFinal`、`libraryDeinit`，最后完成线程退出。
+4. 期限到达时未开始的命令以关闭超时结束；如锁定版本支持且验证过，可在 owner 请求强制 shutdown，该路径必须报告非正常关闭。
 
-- 从现有 RPC 行为提取 `IAriaEngine` 契约测试和错误语义。
-- 记录启动耗时、命令延迟、刷新开销及内存基线。
-- 确认锁定 aria2 版本的许可证、构建选项和目标平台依赖。
+不得用线程中止、另一线程 destroy 或假成功处理 native 卡死。进程内无法保证中断任意卡死调用；watchdog 记录故障并交给应用终止策略，不能复用 session。
 
-退出门槛：接口评审通过，现有 RPC 实现通过全部契约测试。
+初始化失败按“library 已初始化 / session 已创建”逆序清理，不释放未创建或已释放资源。Faulted 后停止正常调用，完成尚未结束的请求并保留根因，只执行已证明安全的清理；内存损坏类故障终止进程。清理失败作为附加诊断，不覆盖根因。`sessionFinal` 返回值按锁定版本退出状态解释，不把历史下载失败自动判成内存损坏。
 
-### 阶段 1：native 最小探针
+## 5. C ABI 与错误契约
 
-- 构建 C ABI bridge，完成同线程 init、session、一次 `RUN_ONCE` 和 shutdown。
-- 实现 ABI 版本检查、错误文本协议和最小事件队列。
+### 5.1 数据与所有权
 
-退出门槛：Linux/Windows 均可连续启动关闭 1,000 次；无死锁、残留线程或 native 泄漏。
+- 导出覆盖创建、运行、命令、查询、事件读取和销毁，以版本管理，不追求固定五个函数。
+- 结构体含 `size`、`version`，使用定宽整数、字节指针和长度；固定调用约定、布局、对齐、长度单位和上限。STL、C++ 异常、bool、wchar_t 不跨边界。
+- 文本为带长度 UTF-8，调用期复制输入输出。托管侧只保留 GID、操作 ID 和独立 DTO，不持有 native 所有权。
+- `DownloadHandle` 由 bridge RAII 管理，所有路径在下一次 run 前释放。有状态 ABI 入口校验 owner 线程，错误线程不触碰 session。
+- 托管使用 `LibraryImport`，启动检查 ABI 版本，不依赖运行时反射封送。
 
-### 阶段 2：引擎抽象与双后端
+### 5.2 缓冲区协议不重放写操作
 
-- ViewModel 改为只依赖 `IAriaEngine`。
-- 暂时保留 RPC 与 native 两个实现，仅用于迁移对照和回滚，不在 UI 中暴露长期后端选择。
+- 写命令返回固定结果头，例如状态、GID 和诊断编号；先验证输出容量再执行副作用，不能为取错误文本重放原命令。
+- 可变长查询使用调用方缓冲区；`BUFFER_TOO_SMALL` 返回所需容量且无业务副作用，是正常协议状态。
+- 事件读取容量不足不出队，复制成功才消费。两阶段读取期间不能插入 run 或其他改变该批数据的操作；必要时仅冻结一批有界结果。
+- 诊断文本单独读取，保持到下一次有状态 ABI 调用；内存不足仍能返回固定错误码。尺寸异常、超限明确失败，不无限扩容。
+- 未预期 C++ 异常在 ABI 边界转 fatal，不穿出 ABI。回调不抛异常，溢出记 fatal 标记，返回 owner 后处理。
 
-退出门槛：两后端通过同一套契约测试，UI 不再引用 RPC 具体类型。
+### 5.3 fail-fast 的行为
 
-### 阶段 3：核心命令与快照
+| 类别 | 行为 |
+|---|---|
+| 下载错误，如 HTTP 失败 | 保留任务错误码并更新 UI，其他下载继续；aria2 自身按用户配置执行协议重试。 |
+| 命令错误，如非法 GID、选项、状态 | 立即失败该请求，不重试、不假成功；session 完整时处理其他请求。 |
+| 满载、未就绪、请求过期 | 明确拒绝并说明是否已接纳，不静默丢请求。 |
+| ABI 不匹配、内存/协议不变量损坏、未预期 native 异常、关键事件溢出 | Faulted，停止接纳并完成未决请求，不自动重启。 |
+| 网关非法来源、坏帧、慢连接 | 拒绝请求或关闭该连接并报告原因，不让外部坏请求直接击穿引擎。 |
 
-- 迁移添加、暂停、恢复、移除、选项和任务查询。
-- 落实有界 Channel、取消语义、DTO 所有权及任务事件合并。
+命令级预期错误边界完成对应 TCS；owner 入口另设最终致命故障边界。允许有目的的错误转换和清理，不允许 blanket catch 返回空列表、false 或成功。
 
-退出门槛：核心工作流在真实 libaria2 集成测试中通过，错误无静默降级。
+错误带操作名、操作 ID、可用 GID、原始错误码和根因。日志不记录 Cookie、Authorization、完整敏感 URL query 或请求原文。
 
-### 阶段 4：事件、恢复与持久化
+## 6. 有界并发、取消与事件
 
-- 覆盖完成/错误/移除事件、session 保存恢复、全局状态和应用关闭排空。
-- 验证崩溃后恢复与损坏状态文件的 fail-fast 行为。
+- 接纳成功是命令原子进入队列并登记结果；关闭与接纳必须线性化，不能遗留无结果请求。
+- UI 可异步等待有界 Channel，但批量生产必须顺序或有限并发，不能预建无限等待 Task。网关非阻塞接纳，满载立即 `QueueFull`，不积累写等待者。
+- 命令使用单调 ID 和启用 `RunContinuationsAsynchronously` 的 TCS，结果只完成一次，调用方 continuation 不在 owner 执行。
+- 接纳前或 native 开始前取消保证不执行；开始后只返回真实结果，不承诺中断。取消/开始有唯一竞态判定点。
+- 超时只结束等待，不代表未执行；保留操作 ID 供查询，禁止因响应丢失自动重新添加。
+- 原生队列保存紧凑状态转换；进度定时采样、按 GID 合并，UI 快照采用有界最新值槽位。
+- 关键状态通道独立有界，进度不能覆盖它。慢订阅者不阻塞 owner；超限显式结束该订阅并报错，UI 显示更新中断并可请求完整快照。
+- native 关键队列溢出代表事件完整性失效，按 D05 Faulted，不能无依据改成仅告警。
+- 快照带 host 实例 ID 与修订号，旧实例延迟 UI 更新必须丢弃，无需恢复 WebSocket 重连系统。
 
-退出门槛：强制退出、重启恢复、批量任务和慢订阅者压力测试通过。
+所有容量、期限、采样频率集中于一份运行配置，启动校验范围。阶段 1 固定数值和负载；测试引用配置或主动缩小容量触发边界，不把随意魔数变成业务契约。
 
-### 阶段 5：平台与性能验收
+## 7. 持久化与既有业务保护
 
-- 对 Linux/Windows 做 Native AOT、长时运行、并发任务和大列表验证。
-- 与阶段 0 基线比较；就绪目标为本地冷启动 500 ms 内，常用命令 p95 不高于 RPC 基线，稳定态内存不得持续增长。
+- 显式指定 session 文件、恢复策略、下载目录和间隔；默认保留现有 30 秒周期保存，正常关闭再次保存，不依赖开发机 aria2 配置。
+- session 任务清单和 `.aria2` 进度文件分别验证。崩溃只恢复最后成功落盘状态，不承诺零丢失或完整历史列表持久化。
+- 状态文件缺失可视为首次运行；存在但损坏、不可读或不可写必须显示路径和原因，不偷偷删除、覆盖或作为空清单。启动加载失败则启动失败；运行中确定的会话保存失败使引擎 Faulted，停止接纳并报告无法继续保证恢复状态。仅在用户显式选择备份后重置时创建新状态。
+- 配置保存与内核应用分别表达，不能回归 REVIEW #50；需重启设置标记待下次启动，不自动重建 session。
+- 保留 Tracker 校验、取消、资源释放和文件删除路径保护；多任务添加、删除文件不承诺跨组件事务。
+- 历史清理、磁链后续 GID、分页、实际选项读取的缺失能力在阶段 0 明确方案，不篡改内核弥补 UI 预期。
 
-退出门槛：所有发布门禁通过，native 后端成为默认；仍可通过构建开关回退 RPC。
+## 8. 浏览器接管：受限 Native Messaging
 
-### 阶段 6：GPL 发布切换与清理
+### 8.1 支持范围
 
-- 完成许可证与源码交付材料后，删除 RPC、子进程管理、端口探测、secret 配置和双后端开关。
-- 发布候选包并验证安装目录不依赖外部 `aria2c`。
+本期实现并验收 Linux 上一种明确记录版本的 Chromium 系浏览器与专用扩展，其他浏览器单独扩展验收。安装成功不能替代真实接管测试。
 
-退出门槛：GPL 合规检查完成，Linux/Windows 安装包和对应源码可复现构建，旧后端代码全部移除。
+唯一链路为“扩展 → Native Messaging stdio → 薄宿主 → Unix Socket → 应用服务”。不提供 loopback HTTP、WebSocket、TCP、custom scheme 或启动失败后的备用通道。仅开放 `AddDownload`、`GetRequestResult`，不开放任意 RPC、删除文件、全局选项、shell 或下载内容代理。
 
-## 9. 测试门禁
+首批接管 aria2 可重放的 HTTP/HTTPS GET 与 magnet。POST、blob、data、浏览器内存流、DRM 和依赖页面运行状态的下载明确不支持，交回浏览器原流程。宿主不自行下载种子或实现 Cookie 修复。
 
-- ABI：结构体尺寸/对齐、版本不匹配、UTF-8、零长度、两阶段缓冲区和错误文本测试。
-- 生命周期：初始化失败、首次 `RUN_ONCE` 失败、重复关闭、关闭中请求、fatal fault 传播。
-- 并发：队列满载、取消竞态、事件洪峰、慢消费者、批量 1,000 个任务。
-- 功能：使用本地 HTTP/BitTorrent 测试源验证添加、进度、暂停、恢复、完成、移除和恢复。
-- 稳定性：至少 24 小时循环运行；ASan/UBSan（Linux）和 Windows native 内存诊断无新增问题。
-- 打包：干净机器/容器离线启动；不存在 `aria2c` 子进程、RPC 监听端口或运行时下载依赖。
-- 发布：Debug、Release、Native AOT、许可证清单、对应源码包和校验和全部通过。
+### 8.2 来源与本机边界
 
-任何门禁失败都阻止删除 RPC 回退实现；不得用自动重试掩盖失败。
+- manifest 固定宿主绝对路径和 `allowed_origins`；校验启动 origin，但不把可伪造 argv 当成本地进程密码。
+- socket 位于已校验所有权的本用户运行目录，私有目录 0700、socket 0600；两端检查 Linux peer credentials 的 UID。拒绝路径替换、符号链接和其他用户连接，不用全局可写 socket。
+- 安全边界为当前 OS 用户与扩展白名单，不声称隔离同 UID 恶意程序。无需新共享 secret，仍须验证来源、权限和输入。
+- 锁由应用持有。连接不上 socket 不等于应用没启动；锁占用通常表示已有实例。宿主最多请求一次应用启动，由应用原子争锁，竞争失败者退出，宿主在有期限握手中等待现有实例 Ready。
+- 启动应用不继承宿主 stdout 协议流。只有持锁应用可安全清理其验证过的旧 socket；宿主不删锁、不杀进程、不循环启动。权限错误立即报告，不当成首次启动。
 
-## 10. 主要风险与控制
+### 8.3 协议、容量与背压
 
-- **进程内崩溃扩大影响**：缩小 C ABI，开启 sanitizers，保留可符号化崩溃信息；不尝试在崩溃后复用 session。
-- **aria2 C++ API 变化**：锁定 commit，所有适配集中在 bridge，升级必须重新跑 ABI 与契约测试。
-- **事件循环饥饿**：限制单轮命令批量和 `RUN_ONCE` 间隔，压力测试测量最大事件延迟。
-- **回调重入或悬空指针**：回调只复制事件，禁止托管回调和跨调用保存指针。
-- **Windows 构建复杂度**：固定工具链与 CMake preset，在 CI 中从源码构建，禁止手工预装依赖。
-- **GPL 交付遗漏**：把许可证、对应源码和构建复现检查设为发布流水线硬门禁。
+固定 `connectNative` 单连接顺序请求模式：宿主随 port 存活，断开后退出；只用一个受限 Unix Socket 连接，不建自己的任务池或持久下载队列。未来改 `sendNativeMessage` 必须单独验收逐消息起进程行为。[浏览器协议](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)
 
-## 11. 完成定义（DoD）
+- 帧遵循 32 位本机字节序长度 + UTF-8 JSON，本期 x64 为小端。长度按字节计，分配前查上限，读满再解析；EOF、半帧超时、非法 UTF-8/JSON 明确失败。stdout 仅协议，日志走 stderr。
+- 主动限制双向单帧 64 KiB、每连接一个未决请求、应用最多 8 个网关连接、每扩展每秒 10 个新添加请求（突发 10）、初始请求期限 10 秒。这些是项目限额，不是浏览器双向统一 1MB 限制。
+- 不传种子 base64、文件内容或分片大数据。schema 固定版本、操作、客户端 requestId、应用实例 ID 和载荷，拒绝未知版本、操作、字段及超限内容。
+- 满载在接纳前返回 `QueueFull` 或 `RateLimited`，不能同时承诺等待与立即拒绝。慢连接到期关闭，不持续读 stdin 后无限排队。
+- 每次 AddDownload 添加一个任务，结构化 URL 和选项白名单仅为 `dir`、`out`、`referer`、`header`、`user-agent`。应用按保存目录策略校验路径，out 禁止目录穿越，不透传任意内核选项。
+- header 为有界数组，一项一条，禁止 CR/LF/NUL 注入；转换为 aria2 KeyVals，不拼 Cookie、不补重定向行为。Cookie/Authorization 只用于用户允许的目标下载，不写日志。
 
-- Linux/Windows 上应用只通过 `IAriaEngine` 使用一个进程内 libaria2 session。
-- 初始化、`RUN_ONCE`、全部命令和关闭由同一专用线程执行，就绪与故障状态确定且可观测。
-- 没有 WebSocket RPC、端口探测、认证 secret、`aria2c` 子进程或裸 C++ 指针跨层。
-- 内存所有权、事件背压、取消和错误传播均有自动化测试，且所有错误保持 fail-fast。
-- Debug、Release、Native AOT、集成、压力和长时测试通过 Linux/Windows CI。
-- GPL 许可证、第三方声明、对应源码、补丁、构建脚本、SBOM 和校验和与二进制同时可获得。
-- RPC 回退实现仅在上述条件全部满足后删除。
+### 8.4 结果与重复提交
+
+- 握手返回应用实例 ID。去重键为“实例 ID + 扩展 ID + requestId”；同 ID 不同载荷冲突，处理中返回 Pending，完成后返回原结果，不重复执行。
+- 请求记录上限 1,024 条，终态保留 10 分钟，处理中不得淘汰；满载先拒绝新请求。过期查询返回 `UnknownOutcome`，不能自动重放；添加必须匹配当前实例 ID。
+- GetRequestResult 仅查询本扩展请求。断开/超时后先查原 ID，不自动换 ID 重加；重启或过期后的未知结果提示用户结合列表确认。不承诺跨崩溃 exactly-once，不增加持久消息队列。
+- 真实 GID 才代表添加成功；入队、Pending、宿主写出请求不是成功。收到成功后才确认取消浏览器原下载，等待期间按浏览器能力暂挂。
+- 明确拒绝或不支持则恢复浏览器原流程并提示原因；结果未知时保留原任务信息并提示待确认，不擅自同时恢复和重加。不能暂挂/恢复的下载类别不纳入自动接管。
+
+## 9. 构建与分发
+
+- 锁定 commit、依赖、补丁与校验值。bridge 用 CMake preset，上游用其支持的构建系统，由脚本串联，不假设 aria2 本身是 CMake 项目。
+- 本期优先捆绑 bridge、libaria2 及必需的非系统共享库，明确 Linux/glibc 最低基线、加载路径和 TLS 信任库来源；依赖按启用特性生成，不机械要求全部可选库。
+- native 资产按 `runtimes/linux-x64/native/` 纳入发布，验证实际输出与依赖解析；不依赖预装 aria2，不在运行时联网补库。
+- 干净 CI 构建 Debug、Release、Native AOT；归档工具链、参数、SBOM、校验和及独立调试符号。
+- 项目接受 GPL 兼容分发方向。仅修改文档时保留 MIT 文件；第一次向他人分发 native-linked 产物（含可下载 CI 产物）前完成许可证切换方案、版权/第三方声明、对应源码、补丁与构建材料。最终表述以锁定源码和依赖审查为准，这是分发门禁，不能拖到删除 RPC 后处理。
+
+## 10. 实施顺序与退出条件
+
+| 阶段 | 工作与退出条件 |
+|---|---|
+| 0：契约与基线 | 固定能力映射、版本/依赖；建立仓库测试项目，迁入相关历史回归；记录 RPC 指标。映射未完成不迁 UI。 |
+| 1：原生探针 | 验证空 session 常驻、同线程、轮询、活动下载关闭、初始化失败和恢复，固定运行配置。生命周期/ABI 核心测试通过再扩大接入。 |
+| 2：核心迁移 | 按能力实现应用服务边界、命令、分页、选项、事件和恢复；RPC 功能冻结，仅构建时对照，逐项通过共同契约，不要求未实现能力提前通过。 |
+| 3：浏览器网关 | 实现扩展、宿主、socket、manifest，真实验证接管成功、拒绝、未知结果和冷启动；不为兼容旧扩展开端口。 |
+| 4：候选验收 | Linux 功能、压力、24 小时稳定性、AOT、无控制端口、干净环境和分发材料全部通过，native 成默认。 |
+| 5：清理 | 候选通过后删 RPC、进程管理、secret、回退开关，复跑删除影响的测试和发布冒烟，确认最终包不依赖 aria2c。 |
+
+RPC 回退仅显式构建选择，不允许 native 失败时自动回退。迁移期间不开发 RPC 新功能；影响对照可信度的真实缺陷仍作最小修复。Windows 不得混入退出门禁。
+
+500ms 本地冷启动是试验测量目标，不要求无限调优；样本、可比基线、硬门禁和停止规则由测试文档统一规定。
+
+## 11. 变更规则与完成定义
+
+D01–D08 固定设计方向；参数和实现可据测量调整，不能因重构偏好反复推翻边界。改契约须同一提交更新本文件、关联测试 ID 与理由，不另加互相冲突的“评审补充”。
+
+完成要求：Linux 单一进程内引擎，生命周期/错误/内存/背压可测，浏览器受限接管成功，控制链路无 TCP/HTTP/WebSocket 端口，既有业务保护未回归，发布测试和源码/二进制交付齐全。未执行或未实现记为 Pending，不以文档承诺代替结果。
+
+## 12. 上游依据
+
+- [libaria2 官方说明](https://aria2.github.io/manual/en/html/libaria2.html)：session、串行访问、循环与 handle；固定 owner 线程是本项目更严格的工程约束。
+- [aria2 构建说明](https://aria2.github.io/manual/en/html/README.html)：构建开关与依赖。
+- [Chrome Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)：manifest、帧、方向性限制与生命周期。
+
+在线文档用于定位，最终以锁定源码和集成测试为准。未经验证的上游 issue 不写成所有版本通用行为，不为本期边界外差异加补丁层。
