@@ -78,6 +78,8 @@ public class AriaTaskService : IAriaTaskService
     private bool _shutdownCompleted;
     private Exception? _shutdownFailure;
     private DateTime _lastReconnectAttempt = DateTime.MinValue;
+    private readonly object _reconnectLock = new();
+    private Task? _reconnectTask;
 
     private List<AriaTaskInfo> _activeTasks = new();
     private List<AriaTaskInfo> _waitingTasks = new();
@@ -125,6 +127,7 @@ public class AriaTaskService : IAriaTaskService
         _trackerService = trackerService;
         _fileSystemService = fileSystemService;
 
+        _rpcClient.ConnectionStateChanged += OnConnectionStateChanged;
         _rpcClient.DownloadStarted += OnDownloadStarted;
         _rpcClient.DownloadPaused += OnDownloadPaused;
         _rpcClient.DownloadStopped += OnDownloadStopped;
@@ -241,15 +244,37 @@ public class AriaTaskService : IAriaTaskService
             operationToken.ThrowIfCancellationRequested();
 
             var settings = _settingsService.Settings;
-            if (settings.AutoStartDaemon)
+            try
             {
-                await EnsureManagedDaemonStartedAsync(settings, operationToken);
-            }
+                if (settings.AutoStartDaemon)
+                {
+                    await EnsureManagedDaemonStartedAsync(settings, operationToken);
+                }
 
-            await ConnectAndReplayRuntimeSettingsAsync(settings, operationToken);
-            operationToken.ThrowIfCancellationRequested();
-            _appliedSettings = settings.Clone();
-            StartPolling(operationToken);
+                await ConnectAndReplayRuntimeSettingsAsync(settings, operationToken);
+                operationToken.ThrowIfCancellationRequested();
+                _appliedSettings = settings.Clone();
+
+                try
+                {
+                    var stat = await _rpcClient.GetGlobalStatAsync(operationToken);
+                    GlobalStat = stat;
+                    GlobalStatUpdated?.Invoke(this, EventArgs.Empty);
+                    WeakReferenceMessenger.Default.Send(new GlobalStatUpdatedMessage(GlobalStat, true));
+                    await RefreshTasksCoreAsync(operationToken);
+                }
+                catch (Exception ex) when (!operationToken.IsCancellationRequested)
+                {
+                    Console.Error.WriteLine($"[AriaTaskService] Initial refresh failed: {ex}");
+                }
+
+                StartPolling(operationToken);
+            }
+            catch (Exception) when (!operationToken.IsCancellationRequested)
+            {
+                TriggerIndependentReconnect();
+                throw;
+            }
         }
         finally
         {
@@ -324,17 +349,32 @@ public class AriaTaskService : IAriaTaskService
     private async Task RunPeriodicPollingAsync(CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        try
+        while (!cancellationToken.IsCancellationRequested)
         {
-            await PollLoopAsync(cancellationToken);
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            try
             {
                 await PollLoopAsync(cancellationToken);
             }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Cancellation is the requested polling shutdown path.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[AriaTaskService] Polling tick failed: {ex}");
+            }
+
+            try
+            {
+                if (!await timer.WaitForNextTickAsync(cancellationToken))
+                {
+                    break;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
         }
     }
 
@@ -348,40 +388,25 @@ public class AriaTaskService : IAriaTaskService
             await _connectionManagementLock.WaitAsync(cancellationToken);
             connectionLockAcquired = true;
 
-            if (!_rpcClient.IsConnected &&
-                DateTime.UtcNow - _lastReconnectAttempt >= TimeSpan.FromSeconds(3))
-            {
-                _lastReconnectAttempt = DateTime.UtcNow;
-                try
-                {
-                    if (!_rpcClient.IsConnected)
-                    {
-                        var settings = _settingsService.Settings;
-                        if (settings.AutoStartDaemon && !_processService.IsRunning)
-                        {
-                            await EnsureManagedDaemonStartedAsync(settings, cancellationToken);
-                        }
-
-                        await ConnectAndReplayRuntimeSettingsAsync(settings, cancellationToken);
-                        _appliedSettings = settings.Clone();
-                    }
-                }
-                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
-                {
-                    Console.Error.WriteLine($"[AriaTaskService] Reconnect failed: {ex}");
-                    WeakReferenceMessenger.Default.Send(
-                        new NotificationMessage($"重新连接 Aria2 失败: {ex.Message}", IsError: true));
-                }
-            }
-
             if (_rpcClient.IsConnected)
             {
-                var stat = await _rpcClient.GetGlobalStatAsync(cancellationToken);
-                cancellationToken.ThrowIfCancellationRequested();
-                GlobalStat = stat;
-                GlobalStatUpdated?.Invoke(this, EventArgs.Empty);
-                WeakReferenceMessenger.Default.Send(new GlobalStatUpdatedMessage(GlobalStat, IsConnected));
-                await RefreshTasksCoreAsync(cancellationToken);
+                try
+                {
+                    var stat = await _rpcClient.GetGlobalStatAsync(cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    GlobalStat = stat;
+                    GlobalStatUpdated?.Invoke(this, EventArgs.Empty);
+                    WeakReferenceMessenger.Default.Send(new GlobalStatUpdatedMessage(GlobalStat, IsConnected));
+                    await RefreshTasksCoreAsync(cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[AriaTaskService] Polling refresh failed: {ex}");
+                }
             }
             else
             {
@@ -395,6 +420,147 @@ public class AriaTaskService : IAriaTaskService
                 _connectionManagementLock.Release();
             }
             Interlocked.Exchange(ref _isPolling, 0);
+        }
+    }
+
+    private void OnConnectionStateChanged(object? sender, EventArgs e)
+    {
+        if (!_rpcClient.IsConnected)
+        {
+            TriggerIndependentReconnect();
+        }
+    }
+
+    private void TriggerIndependentReconnect()
+    {
+        lock (_reconnectLock)
+        {
+            if (Volatile.Read(ref _isDisposed) != 0 || _rpcClient.IsConnected) return;
+            if (_reconnectTask != null && !_reconnectTask.IsCompleted) return;
+
+            _reconnectTask = RunIndependentReconnectLoopAsync(_lifetimeCts.Token);
+        }
+    }
+
+    private async Task RunIndependentReconnectLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested && !_rpcClient.IsConnected)
+        {
+            var elapsed = DateTime.UtcNow - _lastReconnectAttempt;
+            if (elapsed < TimeSpan.FromSeconds(3))
+            {
+                var delay = TimeSpan.FromSeconds(3) - elapsed;
+                try
+                {
+                    await Task.Delay(delay, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+            }
+
+            if (_rpcClient.IsConnected || cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            var connectionLockAcquired = false;
+            try
+            {
+                await _connectionManagementLock.WaitAsync(cancellationToken);
+                connectionLockAcquired = true;
+
+                if (!_rpcClient.IsConnected)
+                {
+                    await TryReconnectCoreAsync(cancellationToken);
+                }
+
+                if (_rpcClient.IsConnected)
+                {
+                    try
+                    {
+                        var stat = await _rpcClient.GetGlobalStatAsync(cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        GlobalStat = stat;
+                        GlobalStatUpdated?.Invoke(this, EventArgs.Empty);
+                        WeakReferenceMessenger.Default.Send(new GlobalStatUpdatedMessage(GlobalStat, true));
+                        await RefreshTasksCoreAsync(cancellationToken);
+                    }
+                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        Console.Error.WriteLine($"[AriaTaskService] Post-reconnect refresh failed: {ex}");
+                    }
+
+                    EnsurePollingRunning();
+                    break;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[AriaTaskService] Independent reconnect cycle error: {ex}");
+            }
+            finally
+            {
+                if (connectionLockAcquired)
+                {
+                    _connectionManagementLock.Release();
+                }
+            }
+        }
+    }
+
+    private async Task TryReconnectCoreAsync(CancellationToken cancellationToken)
+    {
+        _lastReconnectAttempt = DateTime.UtcNow;
+        try
+        {
+            if (!_rpcClient.IsConnected)
+            {
+                var settings = _settingsService.Settings;
+                if (settings.AutoStartDaemon && !_processService.IsRunning)
+                {
+                    await EnsureManagedDaemonStartedAsync(settings, cancellationToken);
+                }
+
+                await ConnectAndReplayRuntimeSettingsAsync(settings, cancellationToken);
+                _appliedSettings = settings.Clone();
+            }
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine($"[AriaTaskService] Reconnect failed: {ex}");
+            WeakReferenceMessenger.Default.Send(
+                new NotificationMessage($"重新连接 Aria2 失败: {ex.Message}", IsError: true));
+        }
+    }
+
+    private void EnsurePollingRunning()
+    {
+        lock (_backgroundTaskLock)
+        {
+            if (Volatile.Read(ref _isDisposed) != 0) return;
+            if (_pollTask == null || _pollTask.IsCompleted)
+            {
+                _pollCts?.Dispose();
+                _pollCts = new CancellationTokenSource();
+                var pollTask = RunPeriodicPollingAsync(_pollCts.Token);
+                _pollTask = pollTask;
+                _ = pollTask.ContinueWith(
+                    task =>
+                    {
+                        Console.Error.WriteLine($"[AriaTaskService] Polling failed: {task.Exception}");
+                        WeakReferenceMessenger.Default.Send(
+                            new NotificationMessage("任务状态轮询已停止；请查看错误日志。", IsError: true));
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
         }
     }
 
@@ -973,6 +1139,7 @@ public class AriaTaskService : IAriaTaskService
             settings.RpcSecret,
             settings.RpcUseTls,
             cancellationToken);
+        _lastReconnectAttempt = DateTime.UtcNow;
         _connectedTrackerEndpoint = GetRpcEndpointKey(settings);
 
         try
@@ -1413,6 +1580,14 @@ public class AriaTaskService : IAriaTaskService
             }
         }
 
+        Task? reconnectTask;
+        lock (_reconnectLock)
+        {
+            reconnectTask = _reconnectTask;
+            _reconnectTask = null;
+        }
+
+        await CaptureBackgroundFailureAsync(reconnectTask, failures);
         await CaptureBackgroundFailureAsync(pollTask, failures);
         foreach (var eventRefreshTask in eventRefreshTasks)
         {
@@ -1485,6 +1660,7 @@ public class AriaTaskService : IAriaTaskService
         }
 
         Interlocked.Exchange(ref _eventRefreshRequested, 0);
+        _rpcClient.ConnectionStateChanged -= OnConnectionStateChanged;
         _rpcClient.DownloadStarted -= OnDownloadStarted;
         _rpcClient.DownloadPaused -= OnDownloadPaused;
         _rpcClient.DownloadStopped -= OnDownloadStopped;

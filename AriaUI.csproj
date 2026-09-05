@@ -10,6 +10,8 @@
   <ItemGroup>
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets/**" />
+    <Compile Remove="tests/**" />
+    <InternalsVisibleTo Include="AriaUI.Tests" />
   </ItemGroup>
 
   <ItemGroup>

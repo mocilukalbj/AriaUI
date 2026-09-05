@@ -42,7 +42,7 @@ public interface IAriaRpcClient : IAsyncDisposable
 
 public class AriaWebSocketRpcClient : IAriaRpcClient
 {
-    private sealed class ConnectionContext(ClientWebSocket socket, CancellationTokenSource cts, long generation, string secret)
+    internal sealed class ConnectionContext(ClientWebSocket socket, CancellationTokenSource cts, long generation, string secret)
     {
         public ClientWebSocket Socket { get; } = socket;
         public CancellationTokenSource Cts { get; } = cts;
@@ -238,7 +238,14 @@ public class AriaWebSocketRpcClient : IAriaRpcClient
                 } while (!result.EndOfMessage);
 
                 var messageJson = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
-                ProcessIncomingMessage(connection, messageJson);
+                try
+                {
+                    ProcessIncomingMessage(connection, messageJson);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[AriaWebSocketRpcClient] Error processing incoming message: {ex.Message}");
+                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -351,88 +358,121 @@ public class AriaWebSocketRpcClient : IAriaRpcClient
         }
     }
 
-    private void ProcessIncomingMessage(ConnectionContext connection, string json)
+    internal void ProcessIncomingMessage(ConnectionContext connection, string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("jsonrpc", out var jsonRpc) ||
-            jsonRpc.ValueKind != JsonValueKind.String ||
-            !string.Equals(jsonRpc.GetString(), "2.0", StringComparison.Ordinal))
+        JsonDocument doc;
+        try
         {
-            throw new InvalidDataException("Received an invalid JSON-RPC 2.0 message.");
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException ex)
+        {
+            Console.Error.WriteLine($"[AriaWebSocketRpcClient] Failed to parse JSON message: {ex.Message}");
+            return;
         }
 
-        if (root.TryGetProperty("id", out var idProp))
+        using (doc)
         {
-            string? id = idProp.ValueKind switch
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("jsonrpc", out var jsonRpc) ||
+                jsonRpc.ValueKind != JsonValueKind.String ||
+                !string.Equals(jsonRpc.GetString(), "2.0", StringComparison.Ordinal))
             {
-                JsonValueKind.String => idProp.GetString(),
-                JsonValueKind.Number => idProp.GetInt64().ToString(),
-                _ => null
-            };
-            if (string.IsNullOrEmpty(id))
-            {
-                throw new InvalidDataException("RPC response contains an invalid request id.");
+                Console.Error.WriteLine($"[AriaWebSocketRpcClient] Received non-JSON-RPC-2.0 message: {json}");
+                return;
             }
 
-            if (connection.PendingRequests.TryRemove(id, out var tcs))
+            if (root.TryGetProperty("id", out var idProp))
             {
-                if (root.TryGetProperty("error", out var errorProp) && errorProp.ValueKind != JsonValueKind.Null && errorProp.ValueKind != JsonValueKind.Undefined)
+                string? id = idProp.ValueKind switch
                 {
-                    if (errorProp.ValueKind != JsonValueKind.Object ||
-                        !errorProp.TryGetProperty("code", out var codeProp) ||
-                        !codeProp.TryGetInt32(out var code) ||
-                        !errorProp.TryGetProperty("message", out var msgProp) ||
-                        msgProp.ValueKind != JsonValueKind.String)
+                    JsonValueKind.String => idProp.GetString(),
+                    JsonValueKind.Number => idProp.GetInt64().ToString(),
+                    _ => null
+                };
+
+                if (string.IsNullOrEmpty(id))
+                {
+                    Console.Error.WriteLine($"[AriaWebSocketRpcClient] RPC message contains null or invalid request id: {json}");
+                    return;
+                }
+
+                if (connection.PendingRequests.TryRemove(id, out var tcs))
+                {
+                    if (root.TryGetProperty("error", out var errorProp) && errorProp.ValueKind != JsonValueKind.Null && errorProp.ValueKind != JsonValueKind.Undefined)
                     {
-                        tcs.TrySetException(new InvalidDataException("RPC response contains an invalid error object."));
+                        if (errorProp.ValueKind != JsonValueKind.Object ||
+                            !errorProp.TryGetProperty("code", out var codeProp) ||
+                            !codeProp.TryGetInt32(out var code) ||
+                            !errorProp.TryGetProperty("message", out var msgProp) ||
+                            msgProp.ValueKind != JsonValueKind.String)
+                        {
+                            tcs.TrySetException(new InvalidDataException("RPC response contains an invalid error object."));
+                        }
+                        else
+                        {
+                            tcs.TrySetException(new AriaRpcException(code, msgProp.GetString() ?? string.Empty));
+                        }
+                    }
+                    else if (root.TryGetProperty("result", out var resultProp))
+                    {
+                        tcs.TrySetResult(resultProp.Clone());
                     }
                     else
                     {
-                        tcs.TrySetException(new AriaRpcException(code, msgProp.GetString() ?? string.Empty));
+                        tcs.TrySetException(new InvalidDataException("RPC response contains neither result nor error."));
                     }
-                }
-                else if (root.TryGetProperty("result", out var resultProp))
-                {
-                    tcs.TrySetResult(resultProp.Clone());
                 }
                 else
                 {
-                    tcs.TrySetException(new InvalidDataException("RPC response contains neither result nor error."));
+                    Console.Error.WriteLine($"[AriaWebSocketRpcClient] Received response for unknown or expired request id: {id}");
                 }
             }
-        }
-        else if (root.TryGetProperty("method", out var methodProp))
-        {
-            var method = methodProp.GetString();
-            var gid = string.Empty;
-            if (root.TryGetProperty("params", out var paramsProp) && paramsProp.ValueKind == JsonValueKind.Array && paramsProp.GetArrayLength() > 0)
+            else if (root.TryGetProperty("method", out var methodProp))
             {
-                var p0 = paramsProp[0];
-                if (p0.ValueKind == JsonValueKind.Object && p0.TryGetProperty("gid", out var gidProp))
+                var method = methodProp.GetString();
+                var gid = string.Empty;
+                if (root.TryGetProperty("params", out var paramsProp) && paramsProp.ValueKind == JsonValueKind.Array && paramsProp.GetArrayLength() > 0)
                 {
-                    gid = gidProp.GetString() ?? string.Empty;
+                    var p0 = paramsProp[0];
+                    if (p0.ValueKind == JsonValueKind.Object && p0.TryGetProperty("gid", out var gidProp))
+                    {
+                        gid = gidProp.GetString() ?? string.Empty;
+                    }
+                }
+
+                if (!IsValidGid(gid))
+                {
+                    Console.Error.WriteLine($"[AriaWebSocketRpcClient] Notification {method} contained missing or invalid GID: '{gid}'");
+                    return;
+                }
+
+                switch (method)
+                {
+                    case "aria2.onDownloadStart":
+                        DownloadStarted?.Invoke(this, gid);
+                        break;
+                    case "aria2.onDownloadComplete":
+                        DownloadCompleted?.Invoke(this, gid);
+                        break;
+                    case "aria2.onDownloadError":
+                        DownloadError?.Invoke(this, gid);
+                        break;
+                    case "aria2.onDownloadPause":
+                        DownloadPaused?.Invoke(this, gid);
+                        break;
+                    case "aria2.onDownloadStop":
+                        DownloadStopped?.Invoke(this, gid);
+                        break;
+                    default:
+                        Console.Error.WriteLine($"[AriaWebSocketRpcClient] Received unknown notification method: {method}");
+                        break;
                 }
             }
-
-            switch (method)
+            else
             {
-                case "aria2.onDownloadStart":
-                    DownloadStarted?.Invoke(this, RequireGid(method, gid));
-                    break;
-                case "aria2.onDownloadComplete":
-                    DownloadCompleted?.Invoke(this, RequireGid(method, gid));
-                    break;
-                case "aria2.onDownloadError":
-                    DownloadError?.Invoke(this, RequireGid(method, gid));
-                    break;
-                case "aria2.onDownloadPause":
-                    DownloadPaused?.Invoke(this, RequireGid(method, gid));
-                    break;
-                case "aria2.onDownloadStop":
-                    DownloadStopped?.Invoke(this, RequireGid(method, gid));
-                    break;
+                Console.Error.WriteLine($"[AriaWebSocketRpcClient] Message without id or method: {json}");
             }
         }
     }
@@ -669,11 +709,17 @@ public class AriaWebSocketRpcClient : IAriaRpcClient
         return RequireOk("aria2.shutdown", res);
     }
 
+    private static bool IsValidGid(string? gid)
+    {
+        return !string.IsNullOrEmpty(gid) &&
+               gid.Length == 16 &&
+               !gid.All(static ch => ch == '0') &&
+               gid.All(static ch => char.IsAsciiHexDigit(ch));
+    }
+
     private static string RequireGid(string method, string result)
     {
-        if (result.Length != 16 ||
-            result.All(static ch => ch == '0') ||
-            result.Any(static ch => !char.IsAsciiHexDigit(ch)))
+        if (!IsValidGid(result))
         {
             throw new InvalidDataException($"RPC method {method} returned an invalid GID: {result}.");
         }

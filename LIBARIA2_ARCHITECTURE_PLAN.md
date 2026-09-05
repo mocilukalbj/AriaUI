@@ -48,23 +48,56 @@ Views / ViewModels ── 应用服务（任务 / 设置 / 生命周期）
 - 原生回调只复制紧凑事件，不调托管代码、不重入 aria2。查询与进度采样在回调返回后执行。
 - 网关将有限的浏览器请求转换为已有应用服务调用，不开放任意内核命令。
 
-## 3. 阶段 0 必须完成能力映射
+## 3. 阶段 0 必须完成能力映射与版本锁定
 
-锁定 aria2 tag、commit 和构建选项，依据该版本头文件、源码与探针填完映射。以下是托管能力要求，不代表上游一定存在同名 API。缺失能力必须确定应用层方案或明确缩减功能，不能迁完 UI 才发现缺口，也不能退回开 RPC 端口。
+### 3.1 锁定版本与构建依赖面
 
-| 能力 | 契约要求 |
-|---|---|
-| 启停 | `StartAsync(EngineStartOptions)`、`ShutdownAsync`；启动选项显式包含持久化路径和间隔。 |
-| 添加 | `AddUriAsync`、`AddTorrentAsync` 返回真实 GID；区分一个任务的镜像 URI 与多个独立任务；批量逐项返回结果，不承诺事务。 |
-| 暂停 / 恢复 | 区分命令接受与状态实际改变，以随后快照确认，不能伪造即时完成。 |
-| 移除 / 清理历史 | 区分活动、等待任务移除与完成、错误、已移除记录清理；确认 native 对应能力。删除本地文件前先校验路径，并确认引擎已停止该任务的文件访问。 |
-| 查询 | 全局、单任务和分页列表快照，不固定只取前 100 项。列表改变时提供修订号或明确的重新分页语义，不假装跨页原子一致。 |
-| 选项 | 全局/任务更新与实际值读取；固定热更新、下次任务生效、需重启应用的分类。保存成功但应用失败须如实报告。 |
-| 批量操作 | 暂停全部、恢复全部、清理历史复用单项语义，报告部分成功，不增加第二条调度路径。 |
-| 持久化 | 启动加载、周期保存、关闭保存和失败报告。额外 `SaveSessionAsync` 是否需要及如何实现由锁定版本能力决定，不能虚构 API。 |
-| 状态 | 原生状态事件加定时快照，不假定 aria2 提供连续进度回调；处理磁链元数据任务与后续下载 GID 的关联。 |
+依据阶段 0 要求，锁定 upstream aria2 版本与编译配置：
 
-核心命令、查询、关闭和恢复映射未完成，阶段 0 不退出。RPC 对照只覆盖共同业务语义；RPC 断线代际与原生线程约束分别测试，不强求传输行为相同。
+- **上游源码仓库**：`https://github.com/aria2/aria2.git`
+- **锁定版本 Tag**：`release-1.37.0`
+- **锁定 Git Commit**：`02f2d0d8472b3c38c29b4dba8c75ebd5fdd2899a`（Tag `release-1.37.0`，Annotated Tag Object: `eb7232465119e1a596cb424e2b6c3c9f4e2abb30`）
+- **目标产物**：Linux x86_64 共享库 `libaria2.so` 与 C ABI 桥接层 `libaria2_bridge.so`
+- **编译标准与工具链**：GNU Autotools + C++14 (GCC 11+ / Clang 14+)
+- **依赖清单**：
+  - `zlib` (>= 1.2.11)：用于 Metalink 和 Gzip 传输内容解压。
+  - `openssl` (>= 1.1.1 / 3.0)：用于 HTTPS/WSS 传输层 TLS 加密及 SHA1/SHA256 哈希校验。
+  - `libxml2` (>= 2.9.10) 或 `expat`：用于 Metalink XML 元数据解析。
+  - `c-ares`（可选，推荐）：用于异步 DNS 解析，防止网络阻塞。
+- **构建裁剪参数**（最小攻击面与纯净依赖）：
+  ```bash
+  ./configure \
+      --enable-libaria2 \
+      --disable-nls \
+      --without-gnutls \
+      --with-openssl \
+      --without-libssh2 \
+      --without-sqlite3 \
+      --without-libuv
+  ```
+
+### 3.2 托管契约与真实 Native libaria2 API 映射表
+
+| 能力 / 托管接口 (`IAriaEngine`) | C ABI 桥接导出 (`libaria2_bridge.so`) | 上游真实 C++ API (`namespace aria2`) | 参数转换与语义细节 | 原生缺口应用层方案 |
+|---|---|---|---|---|
+| **启动**<br/>`StartAsync(options)` | `a2_engine_init` | `aria2::libraryInit()`<br/>`aria2::sessionNew(KeyVals, SessionConfig)` | 启动参数转 `KeyVals`；显式配置 `keepRunning=true`、`useSignalHandler=false` 并注册 `DownloadEventCallback` | 空任务通过 `keepRunning=true` 避免直接退出；恢复任务通过 `--input-file` 传递落盘 session 文件 |
+| **关闭**<br/>`ShutdownAsync()` | `a2_engine_shutdown`<br/>`a2_engine_destroy` | `aria2::shutdown(session, false)`<br/>`aria2::sessionFinal(session)`<br/>`aria2::libraryDeinit()` | 在 owner 线程推进运行循环至正常退出；逆序销毁 session 与 library | 关闭期限到达（5s）未开始命令以 `TimeoutException` 结束；严重超时调用 `aria2::shutdown(true)` |
+| **循环推进** | `a2_engine_run_once` | `aria2::run(session, RUN_ONCE)` | 执行单轮原生事件循环，受 `BatchTimeBudget` (50ms) 和 `LoopTimeout` 约束 | 阶段 1 探针测量 `RUN_ONCE` 延迟，不采用高消耗忙轮询 |
+| **添加 URI**<br/>`AddUriAsync(uris, options)` | `a2_download_add_uri` | `int aria2::addUri(Session*, A2Gid*, const vector<string>&, const KeyVals&, int)` | 选项接受 `IEnumerable<KeyValuePair<string, string>>` 并转为 `KeyVals`（`vector<pair<string, string>>`），**原生支持重复 header**；返回 16 位十六进制 GID | 批量逐项添加并报告独立结果，不承诺跨 URI 事务 |
+| **添加 Torrent**<br/>`AddTorrentAsync(path, options)` | `a2_download_add_torrent` | `int aria2::addTorrent(Session*, A2Gid*, const string&, const KeyVals&, int)` | 校验本地文件安全路径后传入 torrent 路径与配置 `KeyVals` | 解析失败抛出明确 `EngineCommandException` |
+| **暂停**<br/>`PauseAsync(gid, force)` | `a2_download_pause` | `aria2::pause(session, gid)` / `aria2::forcePause(session, gid)` | GID 十六进制解析为 `uint64_t`；`force=true` 立即中断连接 | 区分“命令已接纳”与“状态实际就绪”，状态以随后事件及快照为准 |
+| **恢复**<br/>`ResumeAsync(gid)` | `a2_download_unpause` | `aria2::unpause(session, gid)` | GID 解析为 `uint64_t`，恢复排队或下载 | 任务不存在抛出 `EngineCommandException` (code 1) |
+| **移除**<br/>`RemoveAsync(gid, force)` | `a2_download_remove` | `aria2::remove(session, gid)` / `aria2::forceRemove(session, gid)` | 停止任务网络和文件 IO；必须待 native 确认停止后再由应用服务删本地文件 | 删除本地文件前必须校验安全基准目录 |
+| **清理历史**<br/>`PurgeDownloadResultAsync()` | `a2_download_purge_results` | `aria2::purgeDownloadResult(session)` / `aria2::removeDownloadResult(session, gid)` | 清理已完成、错误或已移除的任务结果缓存 | 遍历清理并返回受影响条目数 |
+| **修改任务选项**<br/>`ChangeOptionAsync(gid, opts)` | `a2_download_change_option` | `int aria2::changeOption(Session*, A2Gid, const KeyVals&)` | 传入任务特定 `KeyVals`（支持动态限速、Header 调整等） | 实际修改结果立即可由 `GetTaskOptionAsync` 读取确认 |
+| **修改全局选项**<br/>`ChangeGlobalOptionAsync(opts)` | `a2_engine_change_global_option` | `int aria2::changeGlobalOption(Session*, const KeyVals&)` | 传入全局 `KeyVals`（支持全局限速、并发度等） | 实际修改结果立即可由 `GetGlobalOptionAsync` 读取确认 |
+| **读取全局选项**<br/>`GetGlobalOptionAsync()` | `a2_engine_get_global_option` | `KeyVals aria2::getGlobalOption(Session*)` | 读取当前 session 全部生效的全局选项键值对，封装为 `AriaOptionCollection`（`IReadOnlyList<KeyValuePair<string, string>>`），原生完整保留多值重复 header | 用于应用层设置同步与热更新验证，原生支持重复 header 查询 |
+| **读取任务选项**<br/>`GetTaskOptionAsync(gid)` | `a2_download_get_option` | `KeyVals aria2::getOption(Session*, A2Gid)` | 读取任务实际生效选项（继承自全局与单任务覆盖），返回 `AriaOptionCollection`，支持多值重复 header 提取 | 任务不存在抛出 `EngineCommandException` (code 1) |
+| **分页查询**<br/>`GetTasksPagedAsync(filter, offset, limit)` | 无单次原生分页导出 | `vector<A2Gid> aria2::getActiveDownloadId()`<br/>`aria2::getDownloadHandle(Session*, A2Gid)` | 上游 libaria2 原生无 `tellWaiting` / `tellStopped` 分页接口 | **引擎层任务注册表方案**：宿主基于事件回调与周期快照在托管层维护一致性任务注册表，提供纯内存切片与单调 `Revision`，彻底突破 RPC 固定 100 条截断限制 |
+| **操作结果查询**<br/>`GetOperationOutcomeAsync(opId)` | 无原生导出 | 原生调用在 owner 线程执行为纯同步 | 上游无异步操作记录与去重查询能力 | **宿主层环形结果缓存方案**：宿主为每个命令分配单调 `OperationId`，在有界环形缓存（1,024条，10分钟TTL）中记录 `Pending/Completed/Failed/Unknown`，解耦调用方超时与后台执行 |
+| **事件通知**<br/>`WatchEventsAsync()` | `a2_engine_poll_events` | `DownloadEventCallback::onDownloadEvent` | 原生回调仅向有界紧凑无锁环形队列写入定宽结构体，由 owner 线程统一出队并写入 C# `Channel<EngineEvent>` | 回调中严禁抛异常、严禁调用托管代码、严禁重入 libaria2 |
+
+核心命令、查询、关闭和恢复映射已全部明确锁定，阶段 0 正式达成退出条件。
 
 ## 4. 生命周期与调度
 
