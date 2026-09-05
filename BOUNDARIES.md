@@ -23,8 +23,8 @@
 | 边界 | 初值 | 依据 / 测试 |
 |---|---|---|
 | 单进程单 session，全部 native 调用同一 owner 线程 | 硬约束 | 上游单 session 限制 / D04 / C02 |
-| `keepRunning=true`，`useSignalHandler=false` | 硬约束 | 上游默认 false 空任务即返 0 / §4.1 |
-| RUN_ONCE 等待按 ~1s 计，不靠忙轮询降延迟 | 假设待探针确认 | 上游文档 / §4.2 探针 1–4 |
+| `keepRunning=true`，`useSignalHandler=false` | 硬约束 (实测常驻返回 1) | 上游默认 false 空任务即返 0 / §4.1 / P01 实测确认 |
+| RUN_ONCE 等待按 ~1s 计，不靠忙轮询降延迟 | 实测 667ms~1000ms，空闲 CPU 0.00% | 上游文档 / §4.2 探针 1–4 / P01 实测确认 |
 | 每轮命令批量上限 | 32 个 + 50ms 时间预算，先到先停 | §4.2 / C08 |
 | 进度/快照采样 | 500ms | 上游示例 500ms / F08 |
 | `DownloadHandle` 下一次 run 前释放 | 硬约束 | 上游头文件 / A05 |

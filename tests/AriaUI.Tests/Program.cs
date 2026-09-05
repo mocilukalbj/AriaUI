@@ -54,6 +54,16 @@ public static class Program
                 Assert.True(report.EmptyStartup.P95Ms < 500, $"Empty startup P95 should meet 500ms experimental target, got {report.EmptyStartup.P95Ms}ms");
                 Assert.True(report.GlobalStatBenchmark.MedianP95Ms > 0, "Median P95 command latency must be recorded");
             }),
+
+            // LIBARIA2_TEST_PLAN.md §5: Phase 1 Native Probe (P01)
+            new("P01", "阶段 1 原生探针：libaria2 + C ABI bridge 构建与 keepRunning/RUN_ONCE/CPU 实测", async () =>
+            {
+                var report = await Phase1NativeProbe.RunProbeAsync();
+                Assert.True(report.KeepRunningEmptySessionReturnsOne, "keepRunning=true must return 1 on empty session");
+                Assert.True(report.RunOnceTimeoutMs > 500, "RUN_ONCE should wait around 1 second in idle epoll");
+                Assert.True(report.IdleCpuPercent < 5.0, "Idle CPU should be near zero during RUN_ONCE waiting");
+                Assert.True(report.WrongThreadRejected, "Cross-thread call must be rejected with A2_STATUS_WRONG_THREAD");
+            }),
         };
 
         int passed = 0;

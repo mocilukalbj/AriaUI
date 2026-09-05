@@ -3,6 +3,7 @@ bin/
 obj/
 publish/
 out/
+runtimes/
 .agents/
 
 ## Visual Studio / VS Code / Rider IDE

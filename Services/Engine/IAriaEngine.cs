@@ -53,6 +53,11 @@ public sealed record EngineRuntimeConfig
     public int BatchCommandBudget { get; init; } = 32;
     public TimeSpan BatchTimeBudget { get; init; } = TimeSpan.FromMilliseconds(50);
     public TimeSpan LoopTimeout { get; init; } = TimeSpan.FromMilliseconds(200);
+    /// <summary>
+    /// Native RUN_ONCE polling timeout (measured as ~1000ms by Phase 1 probe P01).
+    /// Pure idle loop relies on epoll blocking with 0.00% CPU overhead; active tasks wake immediately on IO.
+    /// </summary>
+    public TimeSpan NativePollTimeout { get; init; } = TimeSpan.FromSeconds(1);
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(5);
     public TimeSpan SnapshotInterval { get; init; } = TimeSpan.FromMilliseconds(500);
     public int KeyEventQueueCapacity { get; init; } = 128;
@@ -73,6 +78,8 @@ public sealed record EngineRuntimeConfig
             throw new ArgumentOutOfRangeException(nameof(BatchTimeBudget), "BatchTimeBudget must be between 1ms and 10s.");
         if (LoopTimeout <= TimeSpan.Zero || LoopTimeout > TimeSpan.FromSeconds(10))
             throw new ArgumentOutOfRangeException(nameof(LoopTimeout), "LoopTimeout must be between 1ms and 10s.");
+        if (NativePollTimeout <= TimeSpan.Zero || NativePollTimeout > TimeSpan.FromSeconds(10))
+            throw new ArgumentOutOfRangeException(nameof(NativePollTimeout), "NativePollTimeout must be between 1ms and 10s.");
         if (ShutdownTimeout <= TimeSpan.Zero || ShutdownTimeout > TimeSpan.FromMinutes(2))
             throw new ArgumentOutOfRangeException(nameof(ShutdownTimeout), "ShutdownTimeout must be between 1ms and 2m.");
         if (SnapshotInterval <= TimeSpan.Zero || SnapshotInterval > TimeSpan.FromSeconds(10))
