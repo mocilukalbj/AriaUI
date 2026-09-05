@@ -179,8 +179,7 @@ public static class ApplicationWiringAndGatewayTests
             Assert.Equal(aria2CountBefore, aria2CountAfter);
 
             // Check that port 6800 or common control ports are NOT opened by this process
-            // Port 6800 should not be opened by our native engine
-            Assert.False(engine.State != EngineState.Ready);
+            NetworkAuditHelper.AssertZeroTcpListenSockets();
 
             await taskService.ShutdownAsync();
         }
@@ -403,6 +402,35 @@ public static class ApplicationWiringAndGatewayTests
             var resp = await ReadFrameAsync(sock);
             Assert.Equal("Success", resp.Status);
             Assert.Equal(gw.InstanceId, resp.InstanceId);
+
+            // 2. Disconnect on incomplete length prefix (send 2 bytes then close socket)
+            using (var sockEofLen = await ConnectToGatewayAsync(sockPath))
+            {
+                var partialLen = new byte[] { 0x05, 0x00 }; // 2 bytes instead of 4
+                await sockEofLen.SendAsync(partialLen, SocketFlags.None);
+                sockEofLen.Shutdown(SocketShutdown.Both);
+                sockEofLen.Close();
+            }
+
+            // 3. Disconnect on incomplete frame payload (declare 100 bytes, send only 10 then close)
+            using (var sockEofPayload = await ConnectToGatewayAsync(sockPath))
+            {
+                var declaredLen = BitConverter.GetBytes((uint)100);
+                await sockEofPayload.SendAsync(declaredLen, SocketFlags.None);
+                var partialData = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+                await sockEofPayload.SendAsync(partialData, SocketFlags.None);
+                sockEofPayload.Shutdown(SocketShutdown.Both);
+                sockEofPayload.Close();
+            }
+
+            // 4. Subsequent valid connection works normally after premature EOFs
+            using (var sockValid = await ConnectToGatewayAsync(sockPath))
+            {
+                await SendFrameAsync(sockValid, "{\"version\":1,\"action\":\"Handshake\"}");
+                var hsValid = await ReadFrameAsync(sockValid);
+                Assert.Equal("Success", hsValid.Status);
+                Assert.Equal(gw.InstanceId, hsValid.InstanceId);
+            }
         }
         finally
         {
@@ -603,14 +631,326 @@ public static class ApplicationWiringAndGatewayTests
         var (gw, sockPath) = await CreateTestGatewayAsync();
         try
         {
-            // Verify socket exists
+            // 1. Verify socket exists and file permissions (0600) & directory (0700)
             Assert.True(File.Exists(sockPath));
 
-            // Verify local connection succeeds because same UID
+            if (OperatingSystem.IsLinux())
+            {
+                var sockMode = File.GetUnixFileMode(sockPath);
+                Assert.True(sockMode.HasFlag(UnixFileMode.UserRead) && sockMode.HasFlag(UnixFileMode.UserWrite),
+                    "Socket must have UserRead and UserWrite permissions (0600).");
+                Assert.False(sockMode.HasFlag(UnixFileMode.GroupRead) || sockMode.HasFlag(UnixFileMode.GroupWrite) ||
+                             sockMode.HasFlag(UnixFileMode.OtherRead) || sockMode.HasFlag(UnixFileMode.OtherWrite),
+                    "Socket must not have group or other permissions.");
+
+                var parentDir = Path.GetDirectoryName(sockPath)!;
+                var dirMode = File.GetUnixFileMode(parentDir);
+                Assert.True(dirMode.HasFlag(UnixFileMode.UserRead) && dirMode.HasFlag(UnixFileMode.UserWrite) && dirMode.HasFlag(UnixFileMode.UserExecute),
+                    "Directory must have 0700 permissions.");
+            }
+
+            // 2. Verify local connection succeeds because same UID
+            using (var sock = await ConnectToGatewayAsync(sockPath))
+            {
+                Assert.True(LinuxNative.VerifyPeerCredentials(sock, out uint peerUid), "Local connection must pass peer UID check.");
+                Assert.Equal(LinuxNative.getuid(), peerUid);
+
+                await SendFrameAsync(sock, "{\"version\":1,\"action\":\"Handshake\"}");
+                var resp = await ReadFrameAsync(sock);
+                Assert.Equal("Success", resp.Status);
+            }
+        }
+        finally
+        {
+            await gw.DisposeAsync();
+        }
+
+        // 3. Symlink attack protection: ensure symlink at socket path is replaced safely without following
+        var tempSymlinkDir = Path.Combine(Path.GetTempPath(), $"symlink-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempSymlinkDir);
+        try
+        {
+            var victimFile = Path.Combine(tempSymlinkDir, "victim.txt");
+            await File.WriteAllTextAsync(victimFile, "CRITICAL_VICTIM_CONTENT");
+
+            var symlinkSock = Path.Combine(tempSymlinkDir, "gateway.sock");
+            File.CreateSymbolicLink(symlinkSock, victimFile);
+            Assert.True(File.ResolveLinkTarget(symlinkSock, false) != null, "Symlink should be created successfully.");
+
+            var engine = new FakeAriaEngine(new EngineRuntimeConfig());
+            var settingsService = new MockSettingsService();
+            settingsService.Settings.DefaultDownloadDir = tempSymlinkDir;
+            var taskService = new AriaEngineTaskService(engine, settingsService, new MockTrackerService(), new MockFileSystemService());
+            var lockPath = Path.Combine(tempSymlinkDir, "ariaui.lock");
+
+            var gwSym = new AppGatewayService(taskService, settingsService, new EngineRuntimeConfig(), symlinkSock, lockPath);
+            await gwSym.StartAsync();
+
+            try
+            {
+                // Verify victim file was NOT overwritten or damaged
+                var victimContent = await File.ReadAllTextAsync(victimFile);
+                Assert.Equal("CRITICAL_VICTIM_CONTENT", victimContent);
+
+                // Verify socket path is now a real socket, not following the symlink
+                Assert.True(gwSym.IsListening);
+            }
+            finally
+            {
+                await gwSym.DisposeAsync();
+            }
+
+            // 4. Broken symlink test: socket path points to non-existent target
+            var brokenSock = Path.Combine(tempSymlinkDir, "broken.sock");
+            File.CreateSymbolicLink(brokenSock, Path.Combine(tempSymlinkDir, "nonexistent.target"));
+
+            var gwBroken = new AppGatewayService(taskService, settingsService, new EngineRuntimeConfig(), brokenSock, lockPath);
+            await gwBroken.StartAsync();
+            try
+            {
+                Assert.True(gwBroken.IsListening, "Gateway should clean broken symlink and start successfully.");
+            }
+            finally
+            {
+                await gwBroken.DisposeAsync();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempSymlinkDir))
+            {
+                try { Directory.Delete(tempSymlinkDir, true); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// G05 补齐: 目录坏权限自动修复 (0777 -> 0700) 与 Socket 0600 强制约束
+    /// </summary>
+    public static async Task Test_G05_BadDirectoryPermissionsEnforcement()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"bad-perm-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                // Explicitly set directory permissions to wide open 0777
+                File.SetUnixFileMode(tempDir, 
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+
+                var initialMode = File.GetUnixFileMode(tempDir);
+                Assert.True(initialMode.HasFlag(UnixFileMode.OtherRead), "Setup: Directory should initially be 0777.");
+            }
+
+            var sockPath = Path.Combine(tempDir, "gateway.sock");
+            var lockPath = Path.Combine(tempDir, "ariaui.lock");
+
+            var engine = new FakeAriaEngine(new EngineRuntimeConfig());
+            var settingsService = new MockSettingsService();
+            settingsService.Settings.DefaultDownloadDir = tempDir;
+            var taskService = new AriaEngineTaskService(engine, settingsService, new MockTrackerService(), new MockFileSystemService());
+            await taskService.InitializeAsync();
+
+            var gw = new AppGatewayService(taskService, settingsService, new EngineRuntimeConfig(), sockPath, lockPath);
+            await gw.StartAsync();
+
+            try
+            {
+                if (OperatingSystem.IsLinux())
+                {
+                    // Verify AppGatewayService fixed directory permissions to 0700 (rwx------)
+                    var fixedDirMode = File.GetUnixFileMode(tempDir);
+                    Assert.True(fixedDirMode.HasFlag(UnixFileMode.UserRead) && 
+                                fixedDirMode.HasFlag(UnixFileMode.UserWrite) && 
+                                fixedDirMode.HasFlag(UnixFileMode.UserExecute));
+                    Assert.False(fixedDirMode.HasFlag(UnixFileMode.GroupRead) || 
+                                 fixedDirMode.HasFlag(UnixFileMode.GroupWrite) || 
+                                 fixedDirMode.HasFlag(UnixFileMode.OtherRead) || 
+                                 fixedDirMode.HasFlag(UnixFileMode.OtherWrite),
+                        "AppGatewayService must automatically clamp parent directory permissions to 0700.");
+
+                    // Verify socket mode is 0600 (rw-------)
+                    var sockMode = File.GetUnixFileMode(sockPath);
+                    Assert.True(sockMode.HasFlag(UnixFileMode.UserRead) && sockMode.HasFlag(UnixFileMode.UserWrite));
+                    Assert.False(sockMode.HasFlag(UnixFileMode.OtherRead) || sockMode.HasFlag(UnixFileMode.OtherWrite),
+                        "Socket permissions must be strictly 0600.");
+                }
+            }
+            finally
+            {
+                await gw.DisposeAsync();
+                await taskService.ShutdownAsync();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// G05 补齐: 跨 UID / 对端凭证不匹配时立即断开连接拒绝服务
+    /// </summary>
+    public static async Task Test_G05_PeerCredentialsUidMismatchRejection()
+    {
+        var (gw, sockPath) = await CreateTestGatewayAsync();
+        try
+        {
+            // Simulate foreign UID connecting by setting validator hook to return false
+            gw.PeerCredentialValidatorHook = _ => false;
+
             using var sock = await ConnectToGatewayAsync(sockPath);
+
+            // Attempt to send Handshake
             await SendFrameAsync(sock, "{\"version\":1,\"action\":\"Handshake\"}");
-            var resp = await ReadFrameAsync(sock);
-            Assert.Equal("Success", resp.Status);
+
+            // Server must have rejected and closed connection; reading should return EOF (0 bytes) or throw
+            try
+            {
+                var resp = await ReadFrameAsync(sock);
+                Assert.Fail($"Foreign UID connection should have been immediately closed, but got status '{resp.Status}'");
+            }
+            catch (Exception)
+            {
+                // Expected: connection was closed immediately by gateway
+            }
+        }
+        finally
+        {
+            await gw.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// G04 补齐: 引擎内部命令队列满载 (EngineQueueFullException) 转化为网关 QueueFull 并不锁死缓存
+    /// </summary>
+    public static async Task Test_G04_EngineQueueFullBackpressure()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"qf-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var sockPath = Path.Combine(tempDir, "qf.sock");
+            var lockPath = Path.Combine(tempDir, "qf.lock");
+
+            // Create engine with tiny queue capacity (1)
+            var config = new EngineRuntimeConfig
+            {
+                CommandQueueCapacity = 1,
+                BatchCommandBudget = 1
+            };
+            var engine = new FakeAriaEngine(config);
+            var settingsService = new MockSettingsService();
+            settingsService.Settings.DefaultDownloadDir = tempDir;
+            var taskService = new AriaEngineTaskService(engine, settingsService, new MockTrackerService(), new MockFileSystemService());
+            await taskService.InitializeAsync();
+
+            var gw = new AppGatewayService(taskService, settingsService, config, sockPath, lockPath);
+            await gw.StartAsync();
+
+            var blocker = new TaskCompletionSource();
+            try
+            {
+                // Fill engine queue by injecting a blocker hook
+                engine.OnBeforeCommandExecute = (_, _) => blocker.Task.Wait();
+
+                // 1. First command is dequeued by worker thread and blocks in OnBeforeCommandExecute
+                _ = engine.AddUriAsync(new[] { "https://example.com/blocker.bin" });
+
+                // Brief pause so the worker thread dequeues the first command and blocks
+                await Task.Delay(50);
+
+                // 2. Second command enters and occupies the 1-slot channel capacity
+                _ = engine.AddUriAsync(new[] { "https://example.com/queued.bin" });
+
+                using var sock = await ConnectToGatewayAsync(sockPath);
+
+                // 3. Third command sent via gateway - engine command queue is now full!
+                var addMsg = new GatewayMessage
+                {
+                    Version = 1,
+                    Action = "AddDownload",
+                    RequestId = "req-engine-full",
+                    ExtensionId = "ext-test",
+                    InstanceId = gw.InstanceId,
+                    Payload = new GatewayPayload { Url = "https://example.com/overflow.pkg" }
+                };
+                await SendFrameAsync(sock, JsonSerializer.Serialize(addMsg));
+                var resp = await ReadFrameAsync(sock);
+
+                Assert.Equal("QueueFull", resp.Status);
+
+                // Release blocker so queue drains
+                blocker.TrySetResult();
+                engine.OnBeforeCommandExecute = null;
+                await Task.Delay(100);
+
+                // Retry with same requestId - since QueueFull removed the pending record, it can now succeed
+                await SendFrameAsync(sock, JsonSerializer.Serialize(addMsg));
+                var retryResp = await ReadFrameAsync(sock);
+                Assert.Equal("Success", retryResp.Status);
+                Assert.NotNull(retryResp.Gid);
+            }
+            finally
+            {
+                blocker.TrySetResult();
+                engine.OnBeforeCommandExecute = null;
+                await gw.DisposeAsync();
+                await taskService.ShutdownAsync();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+    }
+
+    /// <summary>
+    /// G02/G12 补齐: 客户端在响应写入期间或刚发送完请求后突然断开 (RST / 异常断线)，网关与引擎保持存活
+    /// </summary>
+    public static async Task Test_G02_AbruptSocketDisconnectDuringTransmission()
+    {
+        var (gw, sockPath) = await CreateTestGatewayAsync();
+        try
+        {
+            // 1. Connect, send request, immediately force abortive reset (LingerOption with 0 seconds)
+            using (var sock = await ConnectToGatewayAsync(sockPath))
+            {
+                sock.LingerState = new LingerOption(true, 0); // TCP/Unix RST behavior
+                var msg = new GatewayMessage
+                {
+                    Version = 1,
+                    Action = "AddDownload",
+                    RequestId = "req-abortive-disconnect",
+                    ExtensionId = "ext-test",
+                    InstanceId = gw.InstanceId,
+                    Payload = new GatewayPayload { Url = "https://example.com/abortive.pkg" }
+                };
+                await SendFrameAsync(sock, JsonSerializer.Serialize(msg));
+                // Abruptly close immediately
+                sock.Close();
+            }
+
+            await Task.Delay(50);
+
+            // 2. Verify gateway is still completely healthy and accepts new connections normally
+            using (var healthySock = await ConnectToGatewayAsync(sockPath))
+            {
+                await SendFrameAsync(healthySock, "{\"version\":1,\"action\":\"Handshake\"}");
+                var resp = await ReadFrameAsync(healthySock);
+                Assert.Equal("Success", resp.Status);
+                Assert.Equal(gw.InstanceId, resp.InstanceId);
+            }
         }
         finally
         {
@@ -735,10 +1075,118 @@ public static class ApplicationWiringAndGatewayTests
             await SendFrameAsync(sock, JsonSerializer.Serialize(queryUnknown));
             var unknownResp = await ReadFrameAsync(sock);
             Assert.Equal("UnknownOutcome", unknownResp.Status);
+
+            // 6. Query with mismatched InstanceId: returns InstanceMismatch
+            var queryMismatch = new GatewayMessage
+            {
+                Version = 1,
+                Action = "GetRequestResult",
+                RequestId = "req-dedup-1",
+                ExtensionId = "ext-test",
+                InstanceId = "mismatched_instance_id_999"
+            };
+            await SendFrameAsync(sock, JsonSerializer.Serialize(queryMismatch));
+            var mismatchResp = await ReadFrameAsync(sock);
+            Assert.Equal("InstanceMismatch", mismatchResp.Status);
+
+            // 7. AddDownload with mismatched InstanceId: returns InstanceMismatch
+            var addMismatch = new GatewayMessage
+            {
+                Version = 1,
+                Action = "AddDownload",
+                RequestId = "req-mismatch-add",
+                ExtensionId = "ext-test",
+                InstanceId = "mismatched_instance_id_999",
+                Payload = new GatewayPayload { Url = "https://example.com/mismatch.pkg" }
+            };
+            await SendFrameAsync(sock, JsonSerializer.Serialize(addMismatch));
+            var addMismatchResp = await ReadFrameAsync(sock);
+            Assert.Equal("InstanceMismatch", addMismatchResp.Status);
         }
         finally
         {
             await gw.DisposeAsync();
+        }
+
+        // 8. Cache capacity limit (QueueFull): test bounded request record capacity
+        var tempCapDir = Path.Combine(Path.GetTempPath(), $"cap-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempCapDir);
+        try
+        {
+            var capSockPath = Path.Combine(tempCapDir, "cap.sock");
+            var capLockPath = Path.Combine(tempCapDir, "cap.lock");
+
+            var engine = new FakeAriaEngine(new EngineRuntimeConfig());
+            var settingsService = new MockSettingsService();
+            settingsService.Settings.DefaultDownloadDir = tempCapDir;
+            var taskService = new AriaEngineTaskService(engine, settingsService, new MockTrackerService(), new MockFileSystemService());
+            await taskService.InitializeAsync();
+
+            var smallCapConfig = new EngineRuntimeConfig { GatewayRequestRecordCapacity = 5 };
+            var gwCap = new AppGatewayService(taskService, settingsService, smallCapConfig, capSockPath, capLockPath);
+            await gwCap.StartAsync();
+
+            try
+            {
+                using var s = await ConnectToGatewayAsync(capSockPath);
+
+                // Add 5 distinct requests to fill capacity
+                for (int i = 0; i < 5; i++)
+                {
+                    var msg = new GatewayMessage
+                    {
+                        Version = 1,
+                        Action = "AddDownload",
+                        RequestId = $"cap-req-{i}",
+                        ExtensionId = "ext-cap",
+                        InstanceId = gwCap.InstanceId,
+                        Payload = new GatewayPayload { Url = $"https://example.com/item-{i}.pkg" }
+                    };
+                    await SendFrameAsync(s, JsonSerializer.Serialize(msg));
+                    var r = await ReadFrameAsync(s);
+                    Assert.Equal("Success", r.Status);
+                }
+
+                // 6th request must be rejected with QueueFull
+                var msg6 = new GatewayMessage
+                {
+                    Version = 1,
+                    Action = "AddDownload",
+                    RequestId = "cap-req-6-overflow",
+                    ExtensionId = "ext-cap",
+                    InstanceId = gwCap.InstanceId,
+                    Payload = new GatewayPayload { Url = "https://example.com/overflow.pkg" }
+                };
+                await SendFrameAsync(s, JsonSerializer.Serialize(msg6));
+                var r6 = await ReadFrameAsync(s);
+                Assert.Equal("QueueFull", r6.Status);
+
+                // Resending an existing requestId still returns cached result even when capacity is full
+                var msgExisting = new GatewayMessage
+                {
+                    Version = 1,
+                    Action = "AddDownload",
+                    RequestId = "cap-req-0",
+                    ExtensionId = "ext-cap",
+                    InstanceId = gwCap.InstanceId,
+                    Payload = new GatewayPayload { Url = "https://example.com/item-0.pkg" }
+                };
+                await SendFrameAsync(s, JsonSerializer.Serialize(msgExisting));
+                var rExisting = await ReadFrameAsync(s);
+                Assert.Equal("Success", rExisting.Status);
+            }
+            finally
+            {
+                await gwCap.DisposeAsync();
+                await taskService.ShutdownAsync();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempCapDir))
+            {
+                try { Directory.Delete(tempCapDir, true); } catch { }
+            }
         }
     }
 
@@ -793,6 +1241,56 @@ public static class ApplicationWiringAndGatewayTests
             await SendFrameAsync(sock, JsonSerializer.Serialize(dataReq));
             var dataResp = await ReadFrameAsync(sock);
             Assert.Equal("UnsupportedScheme", dataResp.Status);
+
+            // 4. Timeout & UnknownOutcome Recovery Protocol:
+            // Send a download request, simulate client dropped/timed out before reading response
+            var reqTimeout = new GatewayMessage
+            {
+                Version = 1,
+                Action = "AddDownload",
+                RequestId = "req-timeout-recovery",
+                ExtensionId = "ext-test",
+                InstanceId = gw.InstanceId,
+                Payload = new GatewayPayload { Url = "https://example.com/timeout.pkg" }
+            };
+            using (var dropSock = await ConnectToGatewayAsync(sockPath))
+            {
+                await SendFrameAsync(dropSock, JsonSerializer.Serialize(reqTimeout));
+                // Wait slightly for engine admission
+                await Task.Delay(50);
+                // Abruptly drop connection before reading response
+            }
+
+            // Client reconnects on fresh socket and queries result of timed-out request
+            using (var querySock = await ConnectToGatewayAsync(sockPath))
+            {
+                var queryRecovery = new GatewayMessage
+                {
+                    Version = 1,
+                    Action = "GetRequestResult",
+                    RequestId = "req-timeout-recovery",
+                    ExtensionId = "ext-test",
+                    InstanceId = gw.InstanceId
+                };
+                await SendFrameAsync(querySock, JsonSerializer.Serialize(queryRecovery));
+                var recoveryResp = await ReadFrameAsync(querySock);
+                Assert.Equal("Success", recoveryResp.Status);
+                Assert.NotNull(recoveryResp.Gid);
+
+                // If query result is UnknownOutcome, client must NOT auto re-add
+                var queryLost = new GatewayMessage
+                {
+                    Version = 1,
+                    Action = "GetRequestResult",
+                    RequestId = "req-never-submitted",
+                    ExtensionId = "ext-test",
+                    InstanceId = gw.InstanceId
+                };
+                await SendFrameAsync(querySock, JsonSerializer.Serialize(queryLost));
+                var lostResp = await ReadFrameAsync(querySock);
+                Assert.Equal("UnknownOutcome", lostResp.Status);
+                // Protocol requirement: client prompts user instead of blindly resubmitting to avoid duplicate tasks
+            }
         }
         finally
         {

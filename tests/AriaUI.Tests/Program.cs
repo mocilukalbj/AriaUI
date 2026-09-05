@@ -98,9 +98,13 @@ public static class Program
             // --- Phase 3 Step 2: Gateway & Protocol Compliance (G01 - G12) ---
             new("G01", "G01: Manifest/扩展白名单与任意RPC/shell拦截", ApplicationWiringAndGatewayTests.Test_G01_ManifestAndAllowedActions),
             new("G02", "G02: 32位长度前缀分段读取与坏长度/EOF处理", ApplicationWiringAndGatewayTests.Test_G02_FrameProtocol_ChunkedAndMalformed),
+            new("G02/Disconnect", "G02/G12: 突发连接重置/异常断线存活与任务连续性", ApplicationWiringAndGatewayTests.Test_G02_AbruptSocketDisconnectDuringTransmission),
             new("G03", "G03: 64KiB边界校验、CRLF/NUL注入拦截与路径穿越防护", ApplicationWiringAndGatewayTests.Test_G03_64KiBBoundary_HeaderInjection_PathTraversal),
             new("G04", "G04: 容量门禁：最多8连接/每扩展10req/s限流/单未决请求", ApplicationWiringAndGatewayTests.Test_G04_CapacityLimits_MaxConnections_RateLimiting),
+            new("G04/EngineQueueFull", "G04/D06: 引擎满载返回QueueFull与缓存不锁死重试", ApplicationWiringAndGatewayTests.Test_G04_EngineQueueFullBackpressure),
             new("G05", "G05: SO_PEERCRED UID隔离与0700/0600权限", ApplicationWiringAndGatewayTests.Test_G05_UidPeerCredentialsAndPermissions),
+            new("G05/BadPerm", "G05: 宽松目录权限(0777)自动收紧修复为0700与Socket 0600", ApplicationWiringAndGatewayTests.Test_G05_BadDirectoryPermissionsEnforcement),
+            new("G05/UidMismatch", "G05: 跨UID对端连接立即切断拒绝服务", ApplicationWiringAndGatewayTests.Test_G05_PeerCredentialsUidMismatchRejection),
             new("G06_G07", "G06/G07: App互斥争锁、冷启动与陈旧Socket清理", ApplicationWiringAndGatewayTests.Test_G06_G07_AppLocking_StaleSocketHandling),
             new("G08_G09", "G08/G09: 请求去重、载荷冲突检测与1024条缓存容量管理", ApplicationWiringAndGatewayTests.Test_G08_G09_Deduplication_ConflictDetection_CacheCapacity),
             new("G10_G11", "G10/G11: GET/magnet支持与不支持scheme(POST/blob/data)拒绝", ApplicationWiringAndGatewayTests.Test_G10_G11_GetAndMagnet_UnsupportedSchemes),
@@ -109,7 +113,31 @@ public static class Program
             // --- Phase 3 Step 3 & End-to-End: Browser Takeover Pipeline ---
             new("Host/Startup", "Host: 薄宿主标准启动与协议头解析", ApplicationWiringAndGatewayTests.Test_Host_NativeMessagingStartupAndColdStartDiscovery),
             new("E2E/Takeover", "E2E: 浏览器提交 -> App接收 -> Native返回真实GID -> UI显示任务 -> 确认接管闭环", ApplicationWiringAndGatewayTests.Test_EndToEnd_BrowserTakeoverFlow),
+
+            // --- Phase 4 Acceptance: Packaging & Zero Control Port Audit (P01 - P04) ---
+            new("P01/Artifacts", "P01/P04: 发布包完整性、ELF格式、Native动态库与SHA256校验", PackagingAndReleaseAcceptanceTests.Test_P01_VerifyPublishedArtifacts),
+            new("P02/NoAria2cDownload", "P02: 无预装 aria2 环境下启动、HTTP真实下载与零控制端口审计", PackagingAndReleaseAcceptanceTests.Test_P02_NoPreinstalledAria2_StartupAndDownload),
+            new("P03/NoAria2cTakeover", "P03: 无预装 aria2 环境下薄宿主独立进程浏览器接管与零控制端口审计", PackagingAndReleaseAcceptanceTests.Test_P03_NoPreinstalledAria2_BrowserTakeoverViaHost),
+            new("P04/NativeAot", "P04: Native AOT 单文件无 JIT 机器码与嵌入式依赖验证", PackagingAndReleaseAcceptanceTests.Test_P04_NativeAotBinaryInspection),
+
+            // --- Phase 4 Acceptance: Performance, Recovery & Stability (M01, F06, F07, S01, S02, S03) ---
+            new("F06", "F06: 正常关闭、周期保存与强退后重启恢复", RecoveryAndStabilityTests.Test_F06_SessionSaveAndRestartRecovery),
+            new("F07", "F07: 缺失、损坏与只读状态文件安全隔离与不覆盖保证", RecoveryAndStabilityTests.Test_F07_MissingAndCorruptedSessionHandling),
+            new("M01/Native", "M01 Native: 启动、命令延迟(3轮x1000次)与同口径 RPC 对照门禁", async () =>
+            {
+                var report = await M01NativeComparisonBenchmark.RunBenchmarkAsync(startupIterations: 30, commandIterations: 1000);
+                Assert.True(report.GatePassed, $"Native median P95 ({report.GlobalStatBenchmark.MedianP95Ms}ms) must not exceed gate threshold ({report.P95GateThresholdMs}ms)");
+                Assert.True(report.EmptyStartup.P95Ms < 500, $"Empty startup P95 ({report.EmptyStartup.P95Ms}ms) must meet 500ms experimental target");
+            }),
+            new("S01", "S01: 1,000 次独立 session 启停无死锁与活动下载采样", RecoveryAndStabilityTests.Test_S01_1000_StartStopCycles),
+            new("S02", "S02: 稳定性压力与长时时序内存增长门禁", RecoveryAndStabilityTests.Test_S02_StabilityStressRun),
+            new("S03", "S03: Native C ABI 边界、对齐与 ASan/UBSan 内存安全诊断", RecoveryAndStabilityTests.Test_S03_NativeMemoryDiagnostics),
         };
+
+        if (args.Length > 0)
+        {
+            testCases = testCases.Where(t => args.Any(a => t.Id.Contains(a, StringComparison.OrdinalIgnoreCase))).ToList();
+        }
 
         int passed = 0;
         int failed = 0;

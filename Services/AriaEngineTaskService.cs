@@ -88,6 +88,8 @@ public class AriaEngineTaskService : IAriaTaskService
             ThrowIfDisposed();
             if (_engine.State == EngineState.Ready)
             {
+                _eventsWatchTask ??= Task.Run(() => WatchEventsLoopAsync(_lifetimeCts.Token), _lifetimeCts.Token);
+                ApplySnapshot(_engine.CurrentSnapshot);
                 return;
             }
 

@@ -93,6 +93,18 @@ public static class Assert
 
         throw new AssertionException(message ?? $"Expected exception of type {typeof(TException).Name}, but no exception was thrown.");
     }
+
+    public static void Fail(string? message = null)
+    {
+        throw new AssertionException(message ?? "Assertion explicitly failed.");
+    }
+
+    public static void Empty<T>(IEnumerable<T> collection, string? message = null)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        if (collection.Any())
+            throw new AssertionException(message ?? "Expected collection to be empty, but it contained elements.");
+    }
 }
 
 public class AssertionException : Exception

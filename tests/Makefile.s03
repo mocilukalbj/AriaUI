@@ -1,0 +1,21 @@
+CXX ?= g++
+CXXFLAGS ?= -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -std=c++14
+REPO_ROOT ?= ..
+RUNTIMES_DIR ?= $(REPO_ROOT)/runtimes/linux-x64/native
+INCLUDES = -I$(REPO_ROOT)/native/bridge
+LDFLAGS = -L$(RUNTIMES_DIR) -laria2_bridge -laria2 -Wl,-rpath,'$$ORIGIN/../runtimes/linux-x64/native' -Wl,-rpath,'$(RUNTIMES_DIR)'
+
+TARGET = native_s03_harness
+
+all: $(TARGET)
+
+$(TARGET): native_s03_harness.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< $(LDFLAGS) -o $@
+
+run: $(TARGET)
+	./$(TARGET)
+
+clean:
+	rm -f $(TARGET)
+
+.PHONY: all run clean

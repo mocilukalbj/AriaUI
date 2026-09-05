@@ -140,6 +140,16 @@ public sealed class GatewayResponse
     public string? Error { get; set; }
 }
 
+[JsonSourceGenerationOptions(WriteIndented = false)]
+[JsonSerializable(typeof(GatewayMessage))]
+[JsonSerializable(typeof(GatewayResponse))]
+[JsonSerializable(typeof(GatewayPayload))]
+[JsonSerializable(typeof(Dictionary<string, JsonElement>))]
+[JsonSerializable(typeof(List<string>))]
+public partial class GatewayJsonContext : JsonSerializerContext
+{
+}
+
 #endregion
 
 /// <summary>
@@ -208,6 +218,8 @@ public sealed class AppGatewayService : IAsyncDisposable
     private readonly ConcurrentDictionary<string, CachedRequestRecord> _records = new();
     private readonly ConcurrentDictionary<string, ExtensionRateLimiter> _rateLimiters = new();
 
+    internal Func<Socket, bool>? PeerCredentialValidatorHook { get; set; }
+
     public string InstanceId => _instanceId;
     public string SocketPath => _socketPath;
     public bool IsListening => _listenerSocket != null;
@@ -234,17 +246,54 @@ public sealed class AppGatewayService : IAsyncDisposable
         Directory.CreateDirectory(baseDir);
         if (OperatingSystem.IsLinux())
         {
-            LinuxNative.chmod(baseDir, 0x1C0); // 0700: rwx------
+            try
+            {
+                File.SetUnixFileMode(baseDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); // 0700
+            }
+            catch
+            {
+                LinuxNative.chmod(baseDir, 0x1C0); // 0700: rwx------
+            }
         }
 
         _socketPath = socketPathOverride ?? Path.Combine(baseDir, "gateway.sock");
         _lockFilePath = lockPathOverride ?? Path.Combine(baseDir, "ariaui.lock");
+
+        var effectiveDir = Path.GetDirectoryName(_socketPath);
+        if (!string.IsNullOrWhiteSpace(effectiveDir))
+        {
+            Directory.CreateDirectory(effectiveDir);
+            if (OperatingSystem.IsLinux())
+            {
+                try
+                {
+                    File.SetUnixFileMode(effectiveDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); // 0700
+                }
+                catch
+                {
+                    LinuxNative.chmod(effectiveDir, 0x1C0); // 0700: rwx------
+                }
+            }
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (Volatile.Read(ref _isDisposed) != 0)
             throw new ObjectDisposedException(nameof(AppGatewayService));
+
+        var parentDir = Path.GetDirectoryName(_socketPath);
+        if (!string.IsNullOrWhiteSpace(parentDir) && OperatingSystem.IsLinux())
+        {
+            try
+            {
+                File.SetUnixFileMode(parentDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); // 0700
+            }
+            catch
+            {
+                LinuxNative.chmod(parentDir, 0x1C0);
+            }
+        }
 
         // 1. Acquire single-instance lock
         try
@@ -260,11 +309,15 @@ public sealed class AppGatewayService : IAsyncDisposable
             throw new InvalidOperationException($"Another instance of AriaUI is already running (lock held at {_lockFilePath}).", ex);
         }
 
-        // 2. Safely clean stale socket now that lock is held
-        if (File.Exists(_socketPath))
+        // 2. Safely clean stale socket now that lock is held (including broken symlinks without following)
+        try
         {
-            try { File.Delete(_socketPath); } catch { }
+            if (File.Exists(_socketPath) || File.ResolveLinkTarget(_socketPath, false) != null)
+            {
+                File.Delete(_socketPath);
+            }
         }
+        catch { }
 
         // 3. Create and bind Unix Domain Socket
         _listenerSocket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
@@ -273,7 +326,14 @@ public sealed class AppGatewayService : IAsyncDisposable
 
         if (OperatingSystem.IsLinux())
         {
-            LinuxNative.chmod(_socketPath, 0x180); // 0600: rw-------
+            try
+            {
+                File.SetUnixFileMode(_socketPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); // 0600: rw-------
+            }
+            catch
+            {
+                LinuxNative.chmod(_socketPath, 0x180); // 0600 fallback
+            }
         }
 
         _listenerSocket.Listen(16);
@@ -292,7 +352,11 @@ public sealed class AppGatewayService : IAsyncDisposable
                 var clientSocket = await _listenerSocket.AcceptAsync(cancellationToken);
 
                 // G05: UID Isolation Check
-                if (!LinuxNative.VerifyPeerCredentials(clientSocket, out uint peerUid))
+                bool uidValid = PeerCredentialValidatorHook != null 
+                    ? PeerCredentialValidatorHook(clientSocket) 
+                    : LinuxNative.VerifyPeerCredentials(clientSocket, out _);
+
+                if (!uidValid)
                 {
                     Console.Error.WriteLine($"[AppGatewayService] Peer UID mismatch: connection rejected.");
                     clientSocket.Dispose();
@@ -446,7 +510,7 @@ public sealed class AppGatewayService : IAsyncDisposable
         try
         {
             var json = Encoding.UTF8.GetString(payloadBytes);
-            message = JsonSerializer.Deserialize<GatewayMessage>(json);
+            message = JsonSerializer.Deserialize(json, GatewayJsonContext.Default.GatewayMessage);
         }
         catch (Exception ex)
         {
@@ -693,6 +757,18 @@ public sealed class AppGatewayService : IAsyncDisposable
                 Gid = gid
             };
         }
+        catch (AriaUI.Services.Engine.EngineQueueFullException eqf)
+        {
+            // Backpressure: Engine command queue is full (D06, §8.3)
+            // Remove pending record so client can retry when queue drains
+            _records.TryRemove(cacheKey, out _);
+            return new GatewayResponse
+            {
+                Status = "QueueFull",
+                RequestId = message.RequestId,
+                Error = eqf.Message
+            };
+        }
         catch (Exception ex)
         {
             newRecord.Status = "Failed";
@@ -771,7 +847,7 @@ public sealed class AppGatewayService : IAsyncDisposable
 
     private static async Task SendResponseAsync(Socket socket, GatewayResponse response, CancellationToken cancellationToken)
     {
-        var json = JsonSerializer.Serialize(response);
+        var json = JsonSerializer.Serialize(response, GatewayJsonContext.Default.GatewayResponse);
         var bytes = Encoding.UTF8.GetBytes(json);
         byte[] lenBytes = BitConverter.GetBytes((uint)bytes.Length);
 

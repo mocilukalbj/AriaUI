@@ -1,0 +1,22 @@
+# AriaUI Release Artifacts SHA256 Checksums
+# Generated on 2026-09-05 13:03:04Z
+
+# --- Native Shared Libraries ---
+8adcbcc76f138c819748aa16476b57c2be17c03d05bee62534bb1ef179ae0b81  runtimes/linux-x64/native/libaria2.so
+60f8a9dbbed9dac83e68267b2c8919566dc41e8e7a5a6f09b59dbdb6ff96c96c  runtimes/linux-x64/native/libaria2_bridge.so
+
+# --- Native AOT Published Artifacts ---
+9d9dd7a6c6bbbbdad578a9eb11276e275bbea89b4b853f2d5454afc2b925eff2  publish/linux-x64-aot/AriaUI
+66c856eaf1a47a00b23204c30c6ee407987bf5086ecc0a1a6b4fd67526b0cd02  publish/linux-x64-aot/libSkiaSharp.so
+1d5c3afef13545bf34bf8f068b14e25ee619c3b6dee235c44e260fe61cb24018  publish/linux-x64-aot/libHarfBuzzSharp.so
+
+# --- Self-Contained Release Published Artifacts ---
+c7a2108d09528350778d8c641d43fb38f0b10f40e9fdd7597d1fb29fee26c727  publish/linux-x64-release/AriaUI
+60746f1d40ce7fd64f8a18c723cd15513fbd514e3d9b6c3c4be6559dd97722a8  publish/linux-x64-release/AriaUI.dll
+
+# --- Self-Contained Debug Published Artifacts ---
+c7a2108d09528350778d8c641d43fb38f0b10f40e9fdd7597d1fb29fee26c727  publish/linux-x64-debug/AriaUI
+7e8ad6e4e9a250de0cfadc49e49427421b3970c74c43d187f2e215beea1e9b43  publish/linux-x64-debug/AriaUI.dll
+
+# --- Thin Host (Native Messaging) Artifacts ---
+7be67424c7306d6b098b63ec978ec1e2398ff0da2eb66ff26c96902a2d39c8c0  publish/linux-x64-host/AriaUI.Host

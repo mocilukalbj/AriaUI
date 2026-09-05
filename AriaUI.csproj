@@ -15,6 +15,7 @@
   <ItemGroup>
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets/**" />
+    <None Include="runtimes/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Compile Remove="tests/**" />
     <Compile Remove="tools/**" />
     <InternalsVisibleTo Include="AriaUI.Tests" />

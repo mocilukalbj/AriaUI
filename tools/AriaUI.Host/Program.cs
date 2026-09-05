@@ -111,6 +111,12 @@ public static class Program
 
     private static string ResolveSocketPath()
     {
+        var envSocket = Environment.GetEnvironmentVariable("ARIAUI_SOCKET_PATH");
+        if (!string.IsNullOrWhiteSpace(envSocket))
+        {
+            return Path.GetFullPath(envSocket);
+        }
+
         var runtimeDir = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
         if (!string.IsNullOrWhiteSpace(runtimeDir) && Directory.Exists(runtimeDir))
         {
@@ -121,6 +127,12 @@ public static class Program
 
     private static string ResolveLockPath()
     {
+        var envLock = Environment.GetEnvironmentVariable("ARIAUI_LOCK_PATH");
+        if (!string.IsNullOrWhiteSpace(envLock))
+        {
+            return Path.GetFullPath(envLock);
+        }
+
         var runtimeDir = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
         if (!string.IsNullOrWhiteSpace(runtimeDir) && Directory.Exists(runtimeDir))
         {

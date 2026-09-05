@@ -452,6 +452,47 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
                 case EngineState.Faulted:
                     throw new EngineFaultedException("Engine is in Faulted state.", FatalException);
                 case EngineState.Created:
+                    if (!string.IsNullOrWhiteSpace(options.SessionFilePath) && File.Exists(options.SessionFilePath))
+                    {
+                        var info = new FileInfo(options.SessionFilePath);
+                        if (info.IsReadOnly)
+                        {
+                            throw new UnauthorizedAccessException($"Session file at '{options.SessionFilePath}' is read-only. Engine startup aborted to preserve user state.");
+                        }
+
+                        if (info.Length > 0)
+                        {
+                            try
+                            {
+                                using var checkStream = new FileStream(options.SessionFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+                            }
+                            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+                            {
+                                throw new UnauthorizedAccessException($"Session file at '{options.SessionFilePath}' cannot be opened for writing. Engine startup aborted.", ex);
+                            }
+
+                            var bytes = File.ReadAllBytes(options.SessionFilePath);
+                            bool hasNull = bytes.Contains((byte)0);
+                            bool invalidControl = false;
+                            for (int b = 0; b < Math.Min(bytes.Length, 4096); b++)
+                            {
+                                byte val = bytes[b];
+                                if (val < 0x20 && val != '\r' && val != '\n' && val != '\t')
+                                {
+                                    invalidControl = true;
+                                    break;
+                                }
+                            }
+
+                            if (hasNull || invalidControl)
+                            {
+                                throw new InvalidDataException($"Session file at '{options.SessionFilePath}' is corrupted. Engine startup aborted to preserve user data.");
+                            }
+
+                            LoadTasksFromSessionFile(options.SessionFilePath, options.DownloadDir);
+                        }
+                    }
+
                     SetState(EngineState.Starting);
                     _ownerCts = new CancellationTokenSource();
                     _startTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -561,9 +602,14 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
             };
 
             List<IntPtr> optAllocations = new();
-            if (options.InitialOptions != null)
+            var initialList = options.InitialOptions != null ? options.InitialOptions.ToList() : new List<KeyValuePair<string, string>>();
+            if (options.SaveSessionIntervalSeconds > 0 && !initialList.Any(k => string.Equals(k.Key, "save-session-interval", StringComparison.OrdinalIgnoreCase)))
             {
-                var initialList = options.InitialOptions.ToList();
+                initialList.Add(new KeyValuePair<string, string>("save-session-interval", options.SaveSessionIntervalSeconds.ToString()));
+            }
+
+            if (initialList.Count > 0)
+            {
                 var keys = initialList.Select(k => k.Key).ToList();
                 var vals = initialList.Select(k => k.Value).ToList();
                 initOpts.OptionKeys = AllocNativeStringArray(keys, out var keyAlloc);
@@ -678,30 +724,61 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
                     ExecuteOneCommand(cmd);
                 }
 
-                // Advance native event loop
-                int runResult = NativeBridge.a2_engine_run_once(_nativeSession);
-                if (runResult < 0)
+                // If more commands are already queued, loop immediately to continue draining
+                if (reader.Count > 0)
                 {
-                    throw new InvalidOperationException($"Native run_once failed with fatal code {runResult}");
+                    continue;
                 }
 
-                // Poll native events
-                int pollStatus = NativeBridge.a2_engine_poll_events(_nativeSession, eventBuf, (uint)eventBuf.Length, out uint eventCount);
-                if (pollStatus < 0)
+                // Check if there are active or waiting downloads that require native event loop advancement
+                bool hasActiveTasks;
+                lock (_tasks)
                 {
-                    throw new InvalidOperationException($"Native event poll fatal: {pollStatus}");
+                    hasActiveTasks = _tasks.Values.Any(t => t.Status is "active" or "waiting");
                 }
 
-                if (eventCount > 0)
+                if (hasActiveTasks)
                 {
-                    for (uint i = 0; i < eventCount; i++)
+                    // Advance native event loop
+                    int runResult = NativeBridge.a2_engine_run_once(_nativeSession);
+                    if (runResult < 0)
                     {
-                        ProcessNativeEvent(ref eventBuf[i]);
+                        throw new InvalidOperationException($"Native run_once failed with fatal code {runResult}");
+                    }
+
+                    // Poll native events
+                    int pollStatus = NativeBridge.a2_engine_poll_events(_nativeSession, eventBuf, (uint)eventBuf.Length, out uint eventCount);
+                    if (pollStatus < 0)
+                    {
+                        throw new InvalidOperationException($"Native event poll fatal: {pollStatus}");
+                    }
+
+                    if (eventCount > 0)
+                    {
+                        for (uint i = 0; i < eventCount; i++)
+                        {
+                            ProcessNativeEvent(ref eventBuf[i]);
+                        }
+                    }
+
+                    // Periodic snapshot refresh
+                    UpdateSnapshotCore();
+                }
+                else
+                {
+                    // Periodic snapshot refresh
+                    UpdateSnapshotCore();
+
+                    // If idle (no active tasks), wait on command channel to wake immediately upon new command
+                    try
+                    {
+                        reader.WaitToReadAsync(_ownerCts?.Token ?? CancellationToken.None).AsTask().Wait(RuntimeConfig.LoopTimeout);
+                    }
+                    catch (Exception) when (State == EngineState.Stopping)
+                    {
+                        break;
                     }
                 }
-
-                // Periodic snapshot refresh
-                UpdateSnapshotCore();
 
                 // If in stopping mode and no commands remain, advance to exit
                 lock (_stateLock)
@@ -734,7 +811,8 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
             {
                 try
                 {
-                    NativeBridge.a2_engine_shutdown(_nativeSession, 1);
+                    int force = (DateTime.UtcNow > _shutdownDeadline) ? 1 : 0;
+                    NativeBridge.a2_engine_shutdown(_nativeSession, force);
                     NativeBridge.a2_engine_run_once(_nativeSession);
                     NativeBridge.a2_engine_destroy(_nativeSession);
                 }
@@ -784,6 +862,92 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
         if (cmd.IsMutating)
         {
             UpdateSnapshotCore();
+        }
+    }
+
+    private void LoadTasksFromSessionFile(string sessionFilePath, string defaultDownloadDir)
+    {
+        try
+        {
+            var lines = File.ReadAllLines(sessionFilePath);
+            AriaTaskInfo? currentTask = null;
+            string? currentGid = null;
+
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine.TrimEnd();
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#'))
+                {
+                    continue;
+                }
+
+                if (!char.IsWhiteSpace(rawLine[0]))
+                {
+                    // New task URI line
+                    var uris = line.Split('\t', StringSplitOptions.RemoveEmptyEntries).ToList();
+                    var firstUri = uris.FirstOrDefault() ?? string.Empty;
+                    currentGid = Guid.NewGuid().ToString("N")[..16];
+                    currentTask = new AriaTaskInfo
+                    {
+                        Gid = currentGid,
+                        Status = "waiting",
+                        Dir = defaultDownloadDir,
+                        Files = new List<AriaFile>
+                        {
+                            new()
+                            {
+                                Index = "1",
+                                Path = Path.Combine(defaultDownloadDir, Path.GetFileName(firstUri.Split('?')[0])),
+                                Uris = uris.Select(u => new AriaUriInfo { Uri = u, Status = "waiting" }).ToList()
+                            }
+                        }
+                    };
+
+                    lock (_tasks)
+                    {
+                        _tasks[currentGid] = currentTask;
+                    }
+                }
+                else if (currentTask != null)
+                {
+                    var trimmed = line.TrimStart();
+                    int eqIdx = trimmed.IndexOf('=');
+                    if (eqIdx > 0)
+                    {
+                        var key = trimmed[..eqIdx].Trim();
+                        var val = trimmed[(eqIdx + 1)..].Trim();
+
+                        if (string.Equals(key, "gid", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var oldGid = currentTask.Gid;
+                            currentTask.Gid = val;
+                            lock (_tasks)
+                            {
+                                _tasks.Remove(oldGid);
+                                _tasks[val] = currentTask;
+                            }
+                        }
+                        else if (string.Equals(key, "dir", StringComparison.OrdinalIgnoreCase))
+                        {
+                            currentTask.Dir = val;
+                        }
+                        else if (string.Equals(key, "out", StringComparison.OrdinalIgnoreCase) && currentTask.Files != null && currentTask.Files.Count > 0)
+                        {
+                            currentTask.Files[0].Path = Path.Combine(currentTask.Dir ?? defaultDownloadDir, val);
+                        }
+                        else if (string.Equals(key, "pause", StringComparison.OrdinalIgnoreCase) && string.Equals(val, "true", StringComparison.OrdinalIgnoreCase))
+                        {
+                            currentTask.Status = "paused";
+                        }
+                    }
+                }
+            }
+
+            UpdateSnapshotCore();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[NativeAriaEngineHost] Error parsing session file: {ex.Message}");
         }
     }
 
