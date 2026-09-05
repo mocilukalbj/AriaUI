@@ -284,6 +284,10 @@ public static class PackagingAndReleaseAcceptanceTests
                 var hsBytes = Encoding.UTF8.GetBytes(hsJson);
                 var hsLenBytes = BitConverter.GetBytes((uint)hsBytes.Length);
 
+                ArgumentNullException.ThrowIfNull(hostProc);
+                ArgumentNullException.ThrowIfNull(hostProc.StandardInput);
+                ArgumentNullException.ThrowIfNull(hostProc.StandardOutput);
+
                 await hostProc.StandardInput.BaseStream.WriteAsync(hsLenBytes, 0, 4);
                 await hostProc.StandardInput.BaseStream.WriteAsync(hsBytes, 0, hsBytes.Length);
                 await hostProc.StandardInput.BaseStream.FlushAsync();
@@ -296,7 +300,7 @@ public static class PackagingAndReleaseAcceptanceTests
 
                 var hsResp = JsonSerializer.Deserialize<GatewayResponse>(Encoding.UTF8.GetString(respPayload));
                 Assert.NotNull(hsResp);
-                Assert.Equal("Success", hsResp.Status);
+                Assert.Equal("Success", hsResp!.Status);
                 Assert.Equal(gw.InstanceId, hsResp.InstanceId);
 
                 // 2. Send 32-bit framed AddDownload message via Host stdin
@@ -328,9 +332,9 @@ public static class PackagingAndReleaseAcceptanceTests
 
                 var addResp = JsonSerializer.Deserialize<GatewayResponse>(Encoding.UTF8.GetString(respPayload));
                 Assert.NotNull(addResp);
-                Assert.Equal("Success", addResp.Status);
+                Assert.Equal("Success", addResp!.Status);
                 Assert.NotNull(addResp.Gid);
-                Assert.Equal(16, addResp.Gid.Length);
+                Assert.Equal(16, addResp.Gid!.Length);
 
                 // 3. Confirm zero control ports while thin host is communicating
                 NetworkAuditHelper.AssertZeroTcpListenSockets();
