@@ -71,6 +71,15 @@ typedef struct A2TaskHandleInfo {
     int32_t error_code;
     uint32_t num_files;
 } A2TaskHandleInfo;
+
+typedef struct A2FileInfo {
+    uint32_t struct_size;
+    uint32_t index;
+    int64_t length;
+    int64_t completed_length;
+    uint32_t selected;
+    uint32_t reserved;
+} A2FileInfo;
 #pragma pack(pop)
 
 typedef void* A2SessionHandle;
@@ -142,6 +151,11 @@ int32_t a2_download_get_option_value(A2SessionHandle session,
 
 // Task inspection
 int32_t a2_download_get_handle_info(A2SessionHandle session, uint64_t gid, A2TaskHandleInfo* out_info);
+
+// index=0 returns the download directory; other indices are aria2's 1-based files.
+// needed_len is UTF-8 bytes without a NUL. BUFFER_TOO_SMALL has no side effects.
+int32_t a2_download_get_file_info(A2SessionHandle session, uint64_t gid, uint32_t index,
+    A2FileInfo* out_info, uint8_t* path, uint32_t capacity, uint32_t* needed_len);
 
 // Stats & Events
 int32_t a2_engine_get_global_stat(A2SessionHandle session, A2GlobalStat* out_stat);

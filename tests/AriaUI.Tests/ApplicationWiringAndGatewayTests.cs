@@ -29,9 +29,22 @@ public static class ApplicationWiringAndGatewayTests
     {
         public bool OpenFileCalled { get; private set; }
         public bool OpenDirectoryCalled { get; private set; }
+        public string? LastDirectory { get; private set; }
+        public string? LastFile { get; private set; }
+        public bool FailOpen { get; set; }
 
-        public void OpenFile(string filePath) => OpenFileCalled = true;
-        public void OpenDirectory(string directoryPath) => OpenDirectoryCalled = true;
+        public void OpenFile(string filePath)
+        {
+            if (FailOpen) throw new FileNotFoundException("File removed after download", filePath);
+            LastFile = filePath;
+            OpenFileCalled = true;
+        }
+        public void OpenDirectory(string directoryPath)
+        {
+            if (FailOpen) throw new DirectoryNotFoundException("Download directory removed");
+            LastDirectory = directoryPath;
+            OpenDirectoryCalled = true;
+        }
     }
 
     private sealed class MockSettingsService : ISettingsService
@@ -70,6 +83,90 @@ public static class ApplicationWiringAndGatewayTests
 
 
     #region Step 1: Application Wiring & Lifecycle Tests
+
+    public static async Task Test_Desktop_NativePathsAndFileActions()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"desktop-paths-{Guid.NewGuid():N}");
+        var downloadDir = root;
+        for (int i = 0; i < 6; i++) downloadDir = Path.Combine(downloadDir, new string('a', 90));
+        Directory.CreateDirectory(downloadDir);
+        var payload = Encoding.UTF8.GetBytes(new string('x', 65536));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        var server = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync(deadline.Token);
+            await using var stream = client.GetStream();
+            var request = new StringBuilder();
+            var b = new byte[1];
+            while (!request.ToString().EndsWith("\r\n\r\n", StringComparison.Ordinal))
+            {
+                if (await stream.ReadAsync(b, deadline.Token) == 0) throw new IOException("Incomplete HTTP request");
+                request.Append((char)b[0]);
+            }
+            var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {payload.Length}\r\nConnection: close\r\n\r\n");
+            await stream.WriteAsync(header, deadline.Token);
+            await stream.WriteAsync(payload, deadline.Token);
+        }, deadline.Token);
+        try
+        {
+            await using var engine = new NativeAriaEngineHost();
+            await engine.StartAsync(new EngineStartOptions
+            {
+                SessionFilePath = Path.Combine(root, "session"), DownloadDir = downloadDir
+            }, deadline.Token);
+            string outputName = "实际文件名.bin";
+            var gid = await engine.AddUriAsync(new[] { $"http://127.0.0.1:{port}/different-url-name.bin" },
+                new[] { new KeyValuePair<string, string>("out", outputName) }, deadline.Token);
+            AriaTaskInfo? actual = null;
+            while (!deadline.IsCancellationRequested)
+            {
+                var snapshot = engine.CurrentSnapshot;
+                actual = snapshot.ActiveTasks.Concat(snapshot.WaitingTasks).Concat(snapshot.StoppedTasks).FirstOrDefault(t => t.Gid == gid);
+                if (actual?.Status == "complete") break;
+                await Task.Delay(25, deadline.Token);
+            }
+            await server;
+            Assert.NotNull(actual);
+            var expected = Path.Combine(downloadDir, outputName);
+            Assert.Equal(expected, actual!.PrimaryFilePath);
+            Assert.Equal(downloadDir, actual.Dir);
+            Assert.Equal((long)payload.Length, actual.TotalBytes);
+            Assert.Equal((long)payload.Length, actual.CompletedBytes);
+            Assert.True((await File.ReadAllBytesAsync(expected, deadline.Token)).SequenceEqual(payload));
+
+            var files = new MockFileSystemService();
+            var settings = new MockSettingsService { Settings = new AppSettings { DefaultDownloadDir = downloadDir, EnableBtTrackers = false } };
+            using var service = new AriaEngineTaskService(engine, settings, new MockTrackerService(), files);
+            var item = new AriaUI.ViewModels.TaskItemViewModel(actual, service);
+            item.OpenFolderCommand.Execute(null);
+            item.OpenFileCommand.Execute(null);
+            Assert.Equal(downloadDir, files.LastDirectory);
+            Assert.Equal(expected, files.LastFile);
+            var recipient = new object();
+            NotificationMessage? notice = null;
+            WeakReferenceMessenger.Default.Register<object, NotificationMessage>(recipient, (_, message) => notice = message);
+            try
+            {
+                files.FailOpen = true;
+                item.OpenFolderCommand.Execute(null);
+                Assert.True(notice?.IsError == true, "Directory failures must surface without crashing the UI");
+                notice = null;
+                item.OpenFileCommand.Execute(null);
+                Assert.True(notice?.IsError == true, "File failures must surface without crashing the UI");
+            }
+            finally { WeakReferenceMessenger.Default.UnregisterAll(recipient); }
+            await engine.ShutdownAsync(deadline.Token);
+        }
+        finally
+        {
+            deadline.Cancel();
+            listener.Stop();
+            Directory.Delete(root, recursive: true);
+        }
+    }
 
     /// <summary>
     /// Step 1: 验证 AriaEngineTaskService 完整生命周期 (UI 添加、暂停、恢复、删除、设置与关闭恢复)

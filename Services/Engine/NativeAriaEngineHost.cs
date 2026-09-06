@@ -73,6 +73,17 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
         public uint NumFiles;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct A2FileInfo
+    {
+        public uint StructSize;
+        public uint Index;
+        public long Length;
+        public long CompletedLength;
+        public uint Selected;
+        public uint Reserved;
+    }
+
     public static class NativeBridge
     {
         [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
@@ -168,6 +179,11 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
             IntPtr session,
             ulong gid,
             out A2TaskHandleInfo outInfo);
+
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int a2_download_get_file_info(
+            IntPtr session, ulong gid, uint index, out A2FileInfo info,
+            [Out] byte[] path, uint capacity, out uint neededLength);
 
         [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int a2_engine_get_global_stat(IntPtr session, out A2GlobalStat stat);
@@ -1056,6 +1072,11 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
         List<AriaTaskInfo> active, waiting, stopped;
         lock (_tasks)
         {
+            if (_nativeSession != IntPtr.Zero)
+            {
+                foreach (var task in _tasks.Values)
+                    RefreshNativeTask(task);
+            }
             active = _tasks.Values.Where(t => t.Status == "active").Select(CloneTask).ToList();
             waiting = _tasks.Values.Where(t => t.Status is "waiting" or "paused").Select(CloneTask).ToList();
             stopped = _tasks.Values.Where(t => t.Status is "complete" or "error" or "removed").Select(CloneTask).ToList();
@@ -1074,6 +1095,58 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
 
         CurrentSnapshot = newSnapshot;
         SnapshotUpdated?.Invoke(this, newSnapshot);
+    }
+
+    private void RefreshNativeTask(AriaTaskInfo task)
+    {
+        var gid = NativeBridge.a2_hex_to_gid(task.Gid);
+        int status = NativeBridge.a2_download_get_handle_info(_nativeSession, gid, out var info);
+        // Removed/evicted native results can outlive their handles in the UI history.
+        if (status == -6) return;
+        if (status != 0)
+            throw new InvalidOperationException($"Native task snapshot failed for {task.Gid}: {status}");
+
+        task.Status = info.Status switch
+        {
+            0 => "active", 1 => "waiting", 2 => "paused", 3 => "complete", 4 => "error", 5 => "removed",
+            _ => throw new InvalidDataException($"Unknown native task status: {info.Status}")
+        };
+        task.TotalLength = info.TotalLength.ToString();
+        task.CompletedLength = info.CompletedLength.ToString();
+        task.UploadLength = info.UploadLength.ToString();
+        task.DownloadSpeed = info.DownloadSpeed.ToString();
+        task.UploadSpeed = info.UploadSpeed.ToString();
+        task.ErrorCode = info.ErrorCode.ToString();
+        task.Dir = ReadNativeFile(gid, 0).Path;
+        var files = new List<AriaFile>();
+        for (uint index = 1; index <= info.NumFiles; index++)
+        {
+            var (file, path) = ReadNativeFile(gid, index);
+            files.Add(new AriaFile
+            {
+                Index = file.Index.ToString(), Path = path, Length = file.Length.ToString(),
+                CompletedLength = file.CompletedLength.ToString(), Selected = file.Selected != 0 ? "true" : "false"
+            });
+        }
+        task.Files = files;
+    }
+
+    private (A2FileInfo Info, string Path) ReadNativeFile(ulong gid, uint index)
+    {
+        var buffer = new byte[512];
+        int status = NativeBridge.a2_download_get_file_info(_nativeSession, gid, index, out var info,
+            buffer, (uint)buffer.Length, out uint needed);
+        if (status == -5)
+        {
+            if (needed > 64 * 1024)
+                throw new InvalidDataException("Native file path exceeds the snapshot limit.");
+            buffer = new byte[needed];
+            status = NativeBridge.a2_download_get_file_info(_nativeSession, gid, index, out info,
+                buffer, (uint)buffer.Length, out needed);
+        }
+        if (status != 0 || needed > buffer.Length || info.StructSize != Marshal.SizeOf<A2FileInfo>())
+            throw new InvalidDataException($"Native file snapshot failed: {status}");
+        return (info, Encoding.UTF8.GetString(buffer, 0, checked((int)needed)));
     }
 
     private static AriaTaskInfo CloneTask(AriaTaskInfo src) => new()
@@ -1211,18 +1284,8 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
                 {
                     Gid = gidHex,
                     Status = "active",
-                    Dir = optionsList?.FirstOrDefault(kv => string.Equals(kv.Key, "dir", StringComparison.OrdinalIgnoreCase)).Value ?? "/tmp",
-                    Files = new List<AriaFile>
-                    {
-                        new()
-                        {
-                            Index = "1",
-                            Path = Path.Combine("/tmp", Path.GetFileName(new Uri(uris[0]).AbsolutePath)),
-                            Length = "0",
-                            CompletedLength = "0",
-                            Selected = "true"
-                        }
-                    }
+                    // The next snapshot copies aria2's actual directory and file paths.
+                    Files = new List<AriaFile>()
                 };
             }
 
@@ -1298,7 +1361,7 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
                 {
                     Gid = gidHex,
                     Status = "active",
-                    Dir = optionsList?.FirstOrDefault(kv => string.Equals(kv.Key, "dir", StringComparison.OrdinalIgnoreCase)).Value ?? "/tmp"
+                    Files = new List<AriaFile>()
                 };
             }
 

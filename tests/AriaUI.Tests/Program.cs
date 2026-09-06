@@ -26,6 +26,7 @@ public static class Program
 
         var testCases = new List<TestCase>
         {
+            new("Desktop/Paths", "实际下载路径、文件大小、打开文件/目录与错误提示回归", ApplicationWiringAndGatewayTests.Test_Desktop_NativePathsAndFileActions),
             // --- Fake Engine Contract Tests (C01-C12) ---
             new("Fake/C01", "Fake: 空任务常驻 Ready 与后续任务接纳", () => ContractTests.Test_C01_EmptyStartAndContinuousTaskAdd(cfg => new FakeAriaEngine(cfg))),
             new("Fake/C02", "Fake: 生命周期状态契约与重复调用验证", () => ContractTests.Test_C02_LifecycleAndStateValidation(cfg => new FakeAriaEngine(cfg))),

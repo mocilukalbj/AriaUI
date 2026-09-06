@@ -16,6 +16,7 @@ public partial class TaskItemViewModel : ViewModelBase
 {
     private readonly IAriaTaskService _taskService;
     private int _fileCheckVersion;
+    private string _folderPath = string.Empty;
 
     [ObservableProperty]
     private string _gid = string.Empty;
@@ -98,6 +99,9 @@ public partial class TaskItemViewModel : ViewModelBase
         HasUploadSpeed = UploadSpeedBytes > 0;
         Progress = info.ProgressPercentage;
         FilePath = info.PrimaryFilePath;
+        _folderPath = info.Files is { Count: > 0 } && !string.IsNullOrWhiteSpace(info.Files[0].Path)
+            ? Path.GetDirectoryName(info.Files[0].Path) ?? info.Dir ?? string.Empty
+            : info.Dir ?? string.Empty;
         ErrorMessage = info.ErrorMessage;
 
         if (int.TryParse(info.Connections, out var conn))
@@ -191,12 +195,30 @@ public partial class TaskItemViewModel : ViewModelBase
     [RelayCommand]
     private void OpenFile()
     {
-        _taskService.OpenFile(FilePath);
+        try
+        {
+            _taskService.OpenFile(FilePath);
+        }
+        catch (Exception ex) when (IsFileOperationError(ex))
+        {
+            WeakReferenceMessenger.Default.Send(new NotificationMessage($"打开文件失败: {ex.Message}", IsError: true));
+        }
     }
 
     [RelayCommand]
     private void OpenFolder()
     {
-        _taskService.OpenDirectory(FilePath);
+        try
+        {
+            _taskService.OpenDirectory(_folderPath);
+        }
+        catch (Exception ex) when (IsFileOperationError(ex))
+        {
+            WeakReferenceMessenger.Default.Send(new NotificationMessage($"打开目录失败: {ex.Message}", IsError: true));
+        }
     }
+
+    private static bool IsFileOperationError(Exception ex) => ex is
+        IOException or UnauthorizedAccessException or ArgumentException or
+        System.ComponentModel.Win32Exception or InvalidOperationException;
 }

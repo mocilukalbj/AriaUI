@@ -454,16 +454,25 @@ public static class ContractTests
 
         // 4. 验证状态筛选
         var activePage = await engine.GetTasksPagedAsync(TaskStatusFilter.Active, 0, 200);
-        Assert.Equal(82, activePage.TotalCount);
-        Assert.Equal(82, activePage.Items.Count);
+        // aria2 limits concurrent downloads; excess unpaused tasks are waiting, not active.
+        Assert.True(activePage.TotalCount > 0);
+        Assert.Equal(activePage.TotalCount, activePage.Items.Count);
+        Assert.True(activePage.Items.All(t => t.Status == "active"));
 
         var waitingPage = await engine.GetTasksPagedAsync(TaskStatusFilter.Waiting, 0, 200);
-        Assert.Equal(15, waitingPage.TotalCount); // 20 暂停中 5 个被移除后剩下 15 个 paused
-        Assert.Equal(15, waitingPage.Items.Count);
+        Assert.Equal(waitingPage.TotalCount, waitingPage.Items.Count);
+        Assert.True(waitingPage.Items.All(t => t.Status is "waiting" or "paused"));
+        foreach (var pausedGid in gids.Skip(81).Take(15))
+            Assert.True(waitingPage.Items.Any(t => t.Gid == pausedGid && t.Status == "paused"));
 
         var stoppedPage = await engine.GetTasksPagedAsync(TaskStatusFilter.Stopped, 0, 200);
         Assert.Equal(5, stoppedPage.TotalCount);
         Assert.Equal(5, stoppedPage.Items.Count);
+        foreach (var removedGid in gids.Skip(96))
+            Assert.True(stoppedPage.Items.Any(t => t.Gid == removedGid && t.Status == "removed"));
+        var partition = activePage.Items.Concat(waitingPage.Items).Concat(stoppedPage.Items).ToList();
+        Assert.Equal(102, partition.Count);
+        Assert.Equal(102, partition.Select(t => t.Gid).Distinct().Count());
 
         // 5. 参数异常校验
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>

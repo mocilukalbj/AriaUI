@@ -7,6 +7,7 @@
 #include <mutex>
 #include <chrono>
 #include <atomic>
+#include <memory>
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -503,6 +504,42 @@ int32_t a2_download_get_handle_info(A2SessionHandle session, uint64_t gid, A2Tas
         out_info->error_code = dh->getErrorCode();
         out_info->num_files = static_cast<uint32_t>(dh->getNumFiles());
         aria2::deleteDownloadHandle(dh);
+        return A2_STATUS_OK;
+    } catch (...) {
+        s->is_faulted = true;
+        return A2_STATUS_FATAL;
+    }
+}
+
+int32_t a2_download_get_file_info(A2SessionHandle session, uint64_t gid, uint32_t index,
+    A2FileInfo* out_info, uint8_t* path, uint32_t capacity, uint32_t* needed_len) {
+    auto* s = reinterpret_cast<BridgeSession*>(session);
+    if (!s || !s->aria2_session || !out_info || !needed_len || (!path && capacity)) return A2_STATUS_INVALID_ARGUMENT;
+    if (get_current_tid() != s->owner_tid) return A2_STATUS_WRONG_THREAD;
+    if (s->is_faulted) return A2_STATUS_FATAL;
+    try {
+        std::unique_ptr<aria2::DownloadHandle, decltype(&aria2::deleteDownloadHandle)> dh(
+            aria2::getDownloadHandle(s->aria2_session, static_cast<aria2::A2Gid>(gid)), aria2::deleteDownloadHandle);
+        if (!dh) return A2_STATUS_NOT_FOUND;
+        if (index > static_cast<uint32_t>(dh->getNumFiles())) return A2_STATUS_INVALID_ARGUMENT;
+        A2FileInfo info = {};
+        info.struct_size = sizeof(info);
+        std::string value;
+        if (index == 0) {
+            value = dh->getDir();
+        } else {
+            const auto file = dh->getFile(static_cast<int>(index));
+            info.index = static_cast<uint32_t>(file.index);
+            info.length = file.length;
+            info.completed_length = file.completedLength;
+            info.selected = file.selected ? 1 : 0;
+            value = file.path;
+        }
+        if (value.size() > UINT32_MAX) return A2_STATUS_ERROR;
+        *needed_len = static_cast<uint32_t>(value.size());
+        if (capacity < *needed_len) return A2_STATUS_BUFFER_TOO_SMALL;
+        if (*needed_len) std::memcpy(path, value.data(), *needed_len);
+        *out_info = info;
         return A2_STATUS_OK;
     } catch (...) {
         s->is_faulted = true;
