@@ -1,0 +1,6 @@
+ACKNOWLEDGEMENT
+
+This extension makes use of the following third party aria2 frontend solutions:
+
+https://github.com/mayswind/AriaNg
+MIT License: https://github.com/mayswind/AriaNg/blob/master/LICENSE

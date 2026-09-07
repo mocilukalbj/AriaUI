@@ -1,0 +1,91 @@
+目前的程序要接管浏览器下载思路是什么
+
+
+
+
+
+
+
+星期日17:40
+
+
+
+
+
+
+用时 2分钟 26秒
+
+
+
+目前的思路是：浏览器扩展负责发现下载，薄宿主负责转发，AriaUI 的内嵌 libaria2 执行下载。
+```mermaid
+flowchart LR
+    A[浏览器扩展] -->|Native Messaging 标准输入输出| B[AriaUI.Host 薄宿主]
+    B -->|Unix Domain Socket| C[AriaUI 应用服务]
+    C --> D[内嵌 libaria2]
+```
+
+
+
+这条控制链路不需要 TCP 端口。宿主是浏览器启动的小进程，只传递命令和结果，不创建下载引擎，也不转发下载文件内容。
+按[架构指导 (line 204)](/home/liubj/文档/proj/AriaUI/LIBARIA2_ARCHITECTURE_PLAN.md:204)，接管流程是：
+1. 扩展识别支持的下载，取得 URL、文件名及必要请求头，暂挂浏览器原下载。
+2. 通过 Native Messaging 把请求交给宿主；宿主连接应用的 Unix Socket，应用未运行时尝试启动。
+3. 应用将任务交给现有内核，返回真实 GID。
+4. 扩展收到成功结果后，才取消浏览器原下载。
+5. 明确拒绝则恢复浏览器下载；超时或断线先用原请求 ID 查询结果，避免重复添加。
+首批范围是可重放的 HTTP/HTTPS GET 和 magnet。POST、blob、data、DRM 等不纳入自动接管，保留浏览器原流程。
+当前应用侧链路已经实测，但真实浏览器自动接管还不能算完成验收。 上次验证了宿主 → Socket → 内核的实际下载和重复请求处理；尚未验证真实扩展的拦截、暂挂、取消与恢复。
+安装部分还有两个具体缺口：
+- 仓库中的[宿主注册文件 (line 4)](/home/liubj/文档/proj/AriaUI/tools/AriaUI.Host/com.ariaui.downloader.json:4)仍指向 Debug 路径，需要改为正式宿主并注册到目标浏览器，匹配扩展 ID。
+- 宿主的应用发现逻辑尚未固定到当前 AOT 发布目录；桌面快捷方式修正后，浏览器冷启动仍需单独对齐。
+因此，仅打开桌面程序不会自动接管浏览器下载；还需要完成专用扩展及宿主注册，并用真实浏览器验证上述成功、拒绝、超时和冷启动流程。
+
+
+星期日17:43
+
+
+
+
+
+
+
+
+/home/liubj/文档/proj/Aria2-Explorer-master这个扩展能不能使用或借鉴
+
+
+
+
+
+
+
+星期日17:44
+
+
+
+
+
+
+用时 1分钟 1秒
+
+
+
+可以借鉴，也适合作为 AriaUI 专用扩展的改造基础，但当前版本还不适合直接作为正式接管方案。
+先纠正上一条回答：扩展在项目旁的这个目录中，已经有 [ariaui_native.js](/home/liubj/文档/proj/Aria2-Explorer-master/js/ariaui_native.js)，实现了 Native Messaging、握手、添加任务和结果查询。此前检查范围遗漏了这里。
+值得保留的部分是：
+部分	建议
+域名、扩展名、大小过滤规则	复用并补充边界测试
+自动接管开关、快捷键、右键入口	保留
+文件名、Referer、Cookie 提取	借鉴，重新核验 Cookie 作用域
+Native Messaging 客户端	保留协议思路，修正连接与请求状态管理
+AriaNG、RPC 服务配置、远程监控	从专用版本移除，下载管理交给 AriaUI
+
+
+当前有几处实际问题：
+1. 入口尚未统一。 [自动拦截 (line 315)](/home/liubj/文档/proj/Aria2-Explorer-master/background.js:315)已走 Native Messaging，但右键发送、磁力链接等仍可能进入旧 send2Aria／AriaNG 路径。它目前属于部分改造版本。
+2. 没有可靠暂挂浏览器下载。 拦截函数没有调用暂停，也没有按 onDeterminingFilename 的异步约定同步返回 true。仅把监听器写成 async 不能保证等待接管结果，可能浏览器和内核同时下载。Chrome 官方约定
+3. 连接管理存在可复现的问题。 我用模拟 Native Port 验证了：握手期间第二次连接请求直接返回 null；握手期间断开后，等待连接的 Promise 一直不结束。这不符合 fail-fast。[对应代码 (line 19)](/home/liubj/文档/proj/Aria2-Explorer-master/js/ariaui_native.js:19)
+4. 未知结果处理不完整。 断线会立即向上报错，而拦截入口统一放行浏览器；如果内核已经接收任务，就可能重复下载。需要明确区分“拒绝”和“结果未知”，保留原请求 ID 查询。
+5. 支持范围判断过宽。 目前只检查 URL 协议，无法据此确认 HTTP 请求是 GET；注释声称过滤 POST，代码没有实现相应判断。
+目录中的 [LICENSE](/home/liubj/文档/proj/Aria2-Explorer-master/LICENSE)是 BSD-3-Clause，允许按其条款修改和再分发，需保留版权、许可及免责声明；附带组件另行核对。
+我的建议是把它裁剪成一个小型 AriaUI 浏览器伴侣扩展，统一所有入口到 Native Messaging。验收集中在成功后取消、拒绝后恢复、未知结果不重复添加、并发下载、宿主冷启动和扩展重启恢复这些边界。这样可以利用已有浏览器交互代码，也符合你要求的简洁、无控制端口架构。

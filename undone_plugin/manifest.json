@@ -1,0 +1,82 @@
+{
+   "name": "__MSG_appName__",
+   "short_name": "A2E",
+   "version": "2.8.2",
+   "manifest_version": 3,
+   "minimum_chrome_version": "116.0.0",
+   "default_locale": "en",
+   "description": "__MSG_description__",
+   "homepage_url": "https://aria2e.com",
+   "options_page": "options.html",
+   "permissions": [
+      "cookies",
+      "tabs",
+      "notifications",
+      "contextMenus",
+      "downloads",
+      "storage",
+      "scripting",
+      "sidePanel",
+      "power",
+      "nativeMessaging"
+   ],
+   "host_permissions": [
+      "<all_urls>"
+   ],
+   "background": {
+      "service_worker": "background.js",
+      "type": "module"
+   },
+   "incognito": "split",
+   "action": {
+      "default_icon": {
+         "16": "images/logo16.png",
+         "32": "images/logo32.png",
+         "48": "images/logo48.png"
+      },
+      "default_title": "__MSG_appName__"
+   },
+   "side_panel": {
+      "default_path": "ui/ariang/index.html"
+   },
+   "content_security_policy": {
+      "extension_pages": "script-src 'self';object-src 'self';frame-src 'self' aria2://* https://*.aria2e.com/;"
+   },
+   "icons": {
+      "16": "images/logo16.png",
+      "32": "images/logo32.png",
+      "48": "images/logo48.png",
+      "128": "images/logo128.png"
+   },
+   "commands": {
+      "toggle-capture": {
+         "suggested_key": {
+            "default": "Alt+A"
+         },
+         "description": "__MSG_toggleCapture__"
+      },
+      "launch-aria2": {
+         "suggested_key": {
+            "default": "Alt+X"
+         },
+         "description": "__MSG_startAria2Str__"
+      }
+   },
+   "externally_connectable": {
+      "ids": [
+         "*"
+      ]
+   },
+   "web_accessible_resources": [
+      {
+         "resources": [
+            "js/magnet.js",
+            "magnet.html",
+            "ui/ariang/logo512m.png"
+         ],
+         "matches": [
+            "<all_urls>"
+         ]
+      }
+   ]
+}

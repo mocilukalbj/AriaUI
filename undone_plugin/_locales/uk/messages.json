@@ -1,0 +1,350 @@
+{
+   "appName": {
+      "message": "Aria2 Explorer"
+   },
+   "description": {
+      "message": "Прискорте завантаження з Aria2 та легко керуйте завданнями завантаження."
+   },
+   "contextmenuTitle": {
+      "message": "Експорт до "
+   },
+   "configPageTitle": {
+      "message": "Налаштування опцій розширення"
+   },
+   "contextmenuStr": {
+      "message": "Контекстне меню"
+   },
+   "contextmenuDes": {
+      "message": "Експорт завдання з контекстного меню"
+   },
+   "exportAllDes": {
+      "message": "експорт всіх посилань"
+   },
+   "exportAllFailedDes": {
+      "message": "Не знайдено дійсного посилання для завантаження."
+   },
+   "checkAltClickDes": {
+      "message": "Запобігання перехопленню завантаження натисканням клавіші Alt"
+   },
+   "checkAltClickTip": {
+      "message": "Запобігання перехопленню завантаження при натисканні клавіші Alt та кліку на посилання. Нові налаштування набудуть чинності після оновлення сторінок."
+   },
+   "askBeforeExportDes": {
+      "message": "Питати налаштування деталей перед експортом"
+   },
+   "downloadCaptureStr": {
+      "message": "завантажити захоплення"
+   },
+   "downloadCaptureDes": {
+      "message": "Увімкнути автоматичне захоплення, коли розмір файлу завантаження"
+   },
+   "askBeforeDownloadDes": {
+      "message": "Питання детальних налаштувань перед автоматичним завантаженням"
+   },
+   "allowExternalRequestDes": {
+      "message": "Отримуйте запит на завантаження з іншого розширення"
+   },
+   "monitorAria2Str": {
+      "message": "Монітор стану Aria2"
+   },
+   "monitorAria2Des": {
+      "message": "Монітор стану звантаження Aria2"
+   },
+   "monitorAllDes": {
+      "message": "Моніторинг всіх Aria2"
+   },
+   "monitorAllTip": {
+      "message": "Якщо встановлено декілька Aria2, слідкуйте за станом усіх та агрегуйте результати."
+   },
+   "keepAwakeDes": {
+      "message": "Зберігайте систему працювати під час завантаження"
+   },
+   "badgeTextDes": {
+      "message": "Позначте кількість завдань за допомогою значка"
+   },
+   "allowNotificationDes": {
+      "message": "Сповіщення стану завданн"
+   },
+   "keepSilentDes": {
+      "message": "Зберігайте сповіщення мовчазними"
+   },
+   "captureMagnetDes": {
+      "message": "Захоплення магнітного посилання"
+   },
+   "captureMagnetWarn": {
+      "message": "Захоплення на рівні ОС, переконайтеся, що перед видаленням вимкнуто"
+   },
+   "captureMagnetTip": {
+      "message": "Натисніть «Ні» у діалоговому вікні підтвердження UAC у Windows, якщо ви не бажаєте записувати системний рівень."
+   },
+   "websiteStr": {
+      "message": "Веб-сайт"
+   },
+   "websiteFilterStr": {
+      "message": "фільтрація веб-сайту"
+   },
+   "selectDefaultRpcStr": {
+      "message": "типовий Aria2"
+   },
+   "fileExtStr": {
+      "message": "Розширення файлу"
+   },
+   "whiteListStr": {
+      "message": "Список дозволених"
+   },
+   "BlackListStr": {
+      "message": "Список заборонених"
+   },
+   "addToWhiteListStr": {
+      "message": "Поточний URL -> Список дозволених"
+   },
+   "addToBlackListStr": {
+      "message": "Поточний URL -> Список заборонених"
+   },
+   "removeFromWhiteListStr": {
+      "message": "Видалити зі списку дозволених"
+   },
+   "removeFromBlackListStr": {
+      "message": "Видалити зі списку заборонених"
+   },
+   "exportFailedStr": {
+      "message": "Експорт не вдався"
+   },
+   "exportFailedDes": {
+      "message": "$rpcName$ не вдалося запустити завдання!",
+      "placeholders": {
+         "rpcName": {
+            "content": "$1",
+            "example": "Aria2 RPC name."
+         }
+      }
+   },
+   "exportSucceedStr": {
+      "message": "Експорт успішний"
+   },
+   "exportSucceedDes": {
+      "message": "$rpcName$ почав завантаження.",
+      "placeholders": {
+         "rpcName": {
+            "content": "$1",
+            "example": "Aria2 RPC name."
+         }
+      }
+   },
+   "taskNotification": {
+      "message": "Сповіщення про завдання"
+   },
+   "downloadStart": {
+      "message": "$rpcName$ завантаження розпочато.",
+      "placeholders": {
+         "rpcName": {
+            "content": "$1",
+            "example": "Aria2"
+         }
+      }
+   },
+   "downloadComplete": {
+      "message": "$rpcName$ завантаження завершено.",
+      "placeholders": {
+         "rpcName": {
+            "content": "$1",
+            "example": "Aria2"
+         }
+      }
+   },
+   "seedingOver": {
+      "message": "$rpcName$ Посів завершено",
+      "placeholders": {
+         "rpcName": {
+            "content": "$1",
+            "example": "Aria2"
+         }
+      }
+   },
+   "downloadError": {
+      "message": "$rpcName$ сталася помилка завантаження.",
+      "placeholders": {
+         "rpcName": {
+            "content": "$1",
+            "example": "Aria2"
+         }
+      }
+   },
+   "allowedSitesPlaceholderDes": {
+      "message": "Вкажіть домени або ID розширень для перехоплення, по одному на рядок, підтримуються регулярні вирази. (Список дозволених має вищий пріоритет)"
+   },
+   "blockedSitesPlaceholderDes": {
+      "message": "Вкажіть домени або ID розширень для виключення з перехоплення, по одному на рядок, підтримуються регулярні вирази, * означає всі."
+   },
+   "allowedExtsPlaceholderDes": {
+      "message": "Встановте тип файлу, який ви хочете захопити або експортувати, один розширення на рядок, * означає все.\n(Білий список має вищий пріоритет)"
+   },
+   "blockedExtsPlaceholderDes": {
+      "message": "Встановте тип файлу, який ви не хочете захоплювати або експортувати, один розширення на рядок, * означає все."
+   },
+   "IconOffStyleStr": {
+      "message": "Піктограма стану вимкнення перехоплення"
+   },
+   "WebUIOpenStyleStr": {
+      "message": "AriaNG відкрити в"
+   },
+   "WebUIOpenStyle1": {
+      "message": "Спливаюче вікно"
+   },
+   "WebUIOpenStyle2": {
+      "message": "Нова вкладка"
+   },
+   "WebUIOpenStyle3": {
+      "message": "Нове вікно"
+   },
+   "WebUIOpenStyle4": {
+      "message": "бічна панель"
+   },
+   "openWebUIStr": {
+      "message": "Відкрити AriaNG"
+   },
+   "startAria2Str": {
+      "message": "Запустіть Aria2"
+   },
+   "toggleCapture": {
+      "message": "Перемикач захоплення завантаження"
+   },
+   "configCloudSync": {
+      "message": "Хмарна синхронізація"
+   },
+   "configCloudSyncDes": {
+      "message": "Синхронізувати AriaNg та конфігурації розширення з поточним обліковим записом браузера"
+   },
+   "uploadConfigWarn": {
+      "message": "Неправильні або порожні дані локальної конфігурації, продовжувати?"
+   },
+   "uploadConfigSucceed": {
+      "message": "Конфігурації успішно завантажено"
+   },
+   "uploadConfigFailed": {
+      "message": "Конфігурації не вдалося завантажити: "
+   },
+   "downloadConfigSucceed": {
+      "message": "Конфігурації успішно завантажено"
+   },
+   "downloadConfigFailed": {
+      "message": "Конфігурації не вдалося завантажити: Дані недійсні або відсутній зв'язок з мережею."
+   },
+   "download": {
+      "message": "звантажити"
+   },
+   "upload": {
+      "message": "Вивантажити"
+   },
+   "wait": {
+      "message": "Очікування"
+   },
+   "finish": {
+      "message": "Завершено"
+   },
+   "connected": {
+      "message": "підключено"
+   },
+   "disconnected": {
+      "message": "відключено"
+   },
+   "review": {
+      "message": "оцінити"
+   },
+   "reviewDes": {
+      "message": "Оцініть нас!"
+   },
+   "Save": {
+      "message": "Зберегти"
+   },
+   "Reset": {
+      "message": "Скинути"
+   },
+   "Acknowledgment": {
+      "message": "Підтвердження"
+   },
+   "OverwriteAriaNgRpcWarn": {
+      "message": "Налаштування RPC змінилися. Синхронізувати ці зміни з AriaNG?"
+   },
+   "RpcUrlTooltipWarnDes": {
+      "message": "Завантаження через небезпечний протокол HTTP/WebSocket може потенційно викласти секретний ключ та файли cookie пов'язаного веб-сайту на відкритій мережі."
+   },
+   "AutoDownloadCookiesTooltipDes": {
+      "message": "Куки пов'язаного веб-сайту не будуть прикріплені під час автоматичного завантаження або прямого експорту."
+   },
+   "ManualDownloadCookiesTooltipDes": {
+      "message": "Вам слід визначити, чи ви хочете видалити файли cookie пов'язаного веб-сайту при налаштуванні завантаження."
+   },
+   "Aria2ManagerPromotionDes": {
+      "message": "Здається, Aria2 Manager не встановлено, звертайтеся до каналу \"Alex Recommends\" для отримання додаткової інформації?"
+   },
+   "ClearSettingsDes": {
+      "message": "Підтверджувати вилучення всіх параметрів?"
+   },
+   "ColorMode": {
+      "message": "Колірний режим"
+   },
+   "LightMode": {
+      "message": "Світлий режим"
+   },
+   "DarkMode": {
+      "message": "Темний режим"
+   },
+   "FollowSystem": {
+      "message": "Слідувати за системою"
+   },
+   "Name": {
+      "message": "назва"
+   },
+   "SecretKey": {
+      "message": "секретний ключ"
+   },
+   "downloadLocation": {
+      "message": "Місце завантаження"
+   },
+   "RemindCaptureTip": {
+      "message": "Перехоплювати завдання завантаження в інші розширення"
+   },
+   "RemindCaptureTipDes": {
+      "message": "Якщо ім'я файлу неправильне, вимкніть функцію Автоматичне перехоплення."
+   },
+   "Dismiss": {
+      "message": "закрити"
+   },
+   "NeverRemind": {
+      "message": "Більше не нагадувати"
+   },
+   "Mark": {
+      "message": "позначити"
+   },
+   "MarkAsSecureTip": {
+      "message": "позначити як безпечний RPC-протокол"
+   },
+   "MarkAsInsecureTip": {
+      "message": "позначити як небезпечний RPC-протокол"
+   },
+   "configImportExportStr": {
+      "message": "Імпорт/Експорт конфігурації"
+   },
+   "configImportExportDes": {
+      "message": "Резервне копіювання та відновлення налаштувань розширення"
+   },
+   "exportConfig": {
+      "message": "Експорт конфігурації"
+   },
+   "importConfig": {
+      "message": "Імпорт конфігурації"
+   },
+   "exportConfigSuccess": {
+      "message": "Конфігурацію успішно експортовано"
+   },
+   "importConfigSuccess": {
+      "message": "Конфігурацію успішно імпортовано"
+   },
+   "importConfigFailed": {
+      "message": "Помилка імпорту конфігурації"
+   },
+   "importConfigConfirm": {
+      "message": "Підтвердити імпорт конфігурації? Це перезапише всі поточні налаштування."
+   }
+}
