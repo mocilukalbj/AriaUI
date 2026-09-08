@@ -1,0 +1,16 @@
+:root { color-scheme: light dark; font: 15px/1.6 system-ui, sans-serif; color: #263a37; background: #f3f6f3; }
+body { margin: 0; } main { max-width: 900px; margin: 40px auto; padding: 0 24px 60px; }
+h1 { font-size: 32px; letter-spacing: -.7px; margin: 8px 0; } h2 { font-size: 20px; margin: 0 0 16px; }
+p { margin: 8px 0 16px; } .eyebrow { color: #14675a; font-size: 12px; letter-spacing: 2px; }
+section { background: #fff; border: 1px solid #dce5df; border-radius: 12px; padding: 24px; margin-top: 20px; }
+.hint { font-size: 13px; color: #62736b; } label { display: block; margin-bottom: 12px; }
+input:not([type=checkbox]), textarea { box-sizing: border-box; width: 100%; border: 1px solid #adbbb3; border-radius: 6px; background: transparent; color: inherit; padding: 10px; font: inherit; }
+textarea { display: block; resize: vertical; height: 85px; margin-top: 6px; } input[type=number] { max-width: 160px; margin-left: 12px; }
+button { border: 1px solid #14675a; border-radius: 6px; background: #14675a; color: #fff; padding: 9px 15px; cursor: pointer; font: inherit; }
+button:disabled { opacity: .5; cursor: wait; } button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #bd851d; outline-offset: 3px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; } .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.record { border-top: 1px solid #dce5df; padding: 18px 0; overflow-wrap: anywhere; } .record p { margin: 4px 0; }
+.record button { font-size: 13px; margin: 8px 8px 0 0; background: transparent; color: inherit; } code { overflow-wrap: anywhere; }
+#feedback { min-height: 24px; color: #8a4f13; } #connection { margin-left: 12px; }
+@media (max-width: 600px) { .grid { grid-template-columns: 1fr; } main { margin-top: 24px; padding: 0 12px; } section { padding: 18px; } }
+@media (prefers-color-scheme: dark) { :root { color: #e3eee6; background: #15201c; } section { background: #1d2c25; border-color: #3c5145; } .hint { color: #a8b9af; } .eyebrow { color: #72c9b3; } #feedback { color: #e4b579; } }

@@ -1,6 +1,13 @@
 ACKNOWLEDGEMENT
 
-This extension makes use of the following third party aria2 frontend solutions:
+AriaUI Companion references and adapts code from Aria2-Explorer:
+https://github.com/alexhua/Aria2-Explorer
+Copyright (c) 2023, Alex Hua
+License: BSD-3-Clause; the complete original notice is retained in LICENSE.
+Thanks to Alex Hua and the upstream contributors.
 
+Aria2-Explorer historically included the AriaNg frontend:
 https://github.com/mayswind/AriaNg
 MIT License: https://github.com/mayswind/AriaNg/blob/master/LICENSE
+The current companion does not embed AriaNg. Historical repository assets
+retain their applicable notices and are not included in the runtime package.

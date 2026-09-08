@@ -1,198 +1,103 @@
-/**
- * AriaUI Native Messaging Client (§8.1–§8.4, G01–G12)
- * Manages communication with AriaUI Thin Host via chrome.runtime.connectNative.
- * Enforces:
- * - Only cancels browser download AFTER receiving real 16-hex GID.
- * - Filters unsupported schemes (POST, blob, data, etc.) and hands back to browser.
- * - On timeout or disconnect, queries GetRequestResult before failing; does not auto-re-add.
- */
-
+// One outstanding frame per connection, matching the existing Linux thin host.
 export class AriaUINativeClient {
-    constructor(hostName = "com.ariaui.downloader") {
+    constructor(hostName = 'com.ariaui.downloader', timeout = 12000) {
         this.hostName = hostName;
+        this.timeout = timeout;
         this.port = null;
         this.instanceId = null;
-        this.pendingRequests = new Map();
-        this.requestTimeouts = new Map();
+        this.connecting = null;
+        this.pending = null;
+        this.tail = Promise.resolve();
+        this.queued = 0;
     }
 
-    ensureConnected() {
-        if (this.port) return Promise.resolve(this.instanceId);
+    serial(work) {
+        if (this.queued >= 32) return Promise.reject(new Error('LocalQueueFull'));
+        this.queued++;
+        const result = this.tail.then(work);
+        this.tail = result.catch(() => {}).finally(() => this.queued--);
+        return result;
+    }
 
-        return new Promise((resolve, reject) => {
-            try {
-                this.port = chrome.runtime.connectNative(this.hostName);
-            } catch (err) {
-                return reject(err);
-            }
+    disconnect(reason = 'Disconnected') {
+        const port = this.port;
+        this.port = null;
+        this.instanceId = null;
+        const pending = this.pending;
+        this.pending = null;
+        pending?.reject(new Error(reason));
+        try { port?.disconnect(); } catch { /* Already disconnected. */ }
+    }
 
-            const handshakeTimeout = setTimeout(() => {
-                this.cleanup();
-                reject(new Error("Handshake timeout with AriaUI host."));
-            }, 10000);
-
-            this.port.onMessage.addListener((msg) => {
-                if (msg.action === "Handshake" || (msg.status === "Success" && msg.instanceId && !msg.requestId)) {
-                    clearTimeout(handshakeTimeout);
-                    this.instanceId = msg.instanceId;
-                    resolve(this.instanceId);
+    async ensureConnected() {
+        if (this.connecting) return this.connecting;
+        if (this.port && this.instanceId) return this.instanceId;
+        this.connecting = (async () => {
+            const port = chrome.runtime.connectNative(this.hostName);
+            this.port = port;
+            port.onMessage.addListener(message => {
+                if (this.port !== port) return;
+                const pending = this.pending;
+                if (!pending) { this.disconnect('UnexpectedResponse'); return; }
+                if (message?.version !== 1 || typeof message.status !== 'string' ||
+                    (pending.requestId && message.requestId !== pending.requestId)) {
+                    this.disconnect('InvalidResponse');
                     return;
                 }
-
-                if (msg.requestId && this.pendingRequests.has(msg.requestId)) {
-                    const { resolve: reqResolve, reject: reqReject } = this.pendingRequests.get(msg.requestId);
-                    this.pendingRequests.delete(msg.requestId);
-                    if (this.requestTimeouts.has(msg.requestId)) {
-                        clearTimeout(this.requestTimeouts.get(msg.requestId));
-                        this.requestTimeouts.delete(msg.requestId);
-                    }
-
-                    if (msg.status === "Success") {
-                        reqResolve(msg);
-                    } else {
-                        reqReject(msg);
-                    }
-                }
+                this.pending = null;
+                pending.resolve(message);
             });
-
-            this.port.onDisconnect.addListener(() => {
-                const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : "Port disconnected.";
-                clearTimeout(handshakeTimeout);
-                this.cleanup();
-                for (const [reqId, handler] of this.pendingRequests.entries()) {
-                    handler.reject({ status: "Disconnected", error: err, requestId: reqId });
-                }
-                this.pendingRequests.clear();
+            port.onDisconnect.addListener(() => {
+                void chrome.runtime.lastError;
+                if (this.port === port) this.disconnect();
             });
-
-            // Send Handshake
-            this.port.postMessage({
-                version: 1,
-                action: "Handshake"
-            });
-        });
+            const response = await this.exchange({ version: 1, action: 'Handshake' });
+            if (response.status !== 'Success' || typeof response.instanceId !== 'string' || !response.instanceId) {
+                this.disconnect('HandshakeRejected');
+                throw new Error('HandshakeRejected');
+            }
+            this.instanceId = response.instanceId;
+            return this.instanceId;
+        })();
+        try { return await this.connecting; }
+        finally { this.connecting = null; }
     }
 
-    cleanup() {
-        if (this.port) {
-            try { this.port.disconnect(); } catch {}
-            this.port = null;
-        }
-        this.instanceId = null;
-    }
-
-    isSupportedUrl(url) {
-        if (!url) return false;
-        const lower = url.trim().toLowerCase();
-        return lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("magnet:?");
-    }
-
-    async addDownload(downloadItem, headersList = []) {
-        if (!this.isSupportedUrl(downloadItem.url)) {
-            return {
-                captured: false,
-                reason: "UnsupportedScheme",
-                message: "Only HTTP, HTTPS and magnet downloads are supported."
+    exchange(message) {
+        if (!this.port || this.pending) return Promise.reject(new Error('ConnectionBusy'));
+        if (new TextEncoder().encode(JSON.stringify(message)).length > 65536) return Promise.reject(new Error('FrameTooLarge'));
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => this.disconnect('Timeout'), this.timeout);
+            this.pending = {
+                requestId: message.requestId,
+                resolve: value => { clearTimeout(timer); resolve(value); },
+                reject: error => { clearTimeout(timer); reject(error); }
             };
-        }
-
-        await this.ensureConnected();
-
-        const requestId = "req-" + Date.now() + "-" + Math.random().toString(36).substring(2, 8);
-        const allowedHeaders = [];
-
-        for (const h of headersList) {
-            if (typeof h === "string" && !h.includes("\r") && !h.includes("\n") && !h.includes("\0")) {
-                if (allowedHeaders.length < 32) {
-                    allowedHeaders.push(h);
-                }
-            }
-        }
-
-        const message = {
-            version: 1,
-            action: "AddDownload",
-            requestId: requestId,
-            extensionId: chrome.runtime.id || "aria2-explorer",
-            instanceId: this.instanceId,
-            payload: {
-                url: downloadItem.url,
-                out: downloadItem.filename ? downloadItem.filename.replace(/^.*[\\\/]/, '') : undefined,
-                referer: (downloadItem.referrer && downloadItem.referrer !== "about:blank") ? downloadItem.referrer : undefined,
-                userAgent: navigator.userAgent,
-                headers: allowedHeaders.length > 0 ? allowedHeaders : undefined
-            }
-        };
-
-        return new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(async () => {
-                this.pendingRequests.delete(requestId);
-                this.requestTimeouts.delete(requestId);
-
-                // Unknown outcome: query original request result before giving up
-                try {
-                    const outcome = await this.queryResult(requestId);
-                    if (outcome && outcome.status === "Success" && outcome.gid) {
-                        return resolve(outcome);
-                    }
-                } catch {}
-
-                reject({ status: "Timeout", requestId: requestId, error: "Request timed out; status unknown." });
-            }, 10000);
-
-            this.requestTimeouts.set(requestId, timeoutId);
-            this.pendingRequests.set(requestId, { resolve, reject });
-
-            try {
-                this.port.postMessage(message);
-            } catch (err) {
-                clearTimeout(timeoutId);
-                this.pendingRequests.delete(requestId);
-                this.requestTimeouts.delete(requestId);
-                reject(err);
-            }
+            try { this.port.postMessage(message); }
+            catch { this.disconnect('SendFailed'); }
         });
     }
 
-    async queryResult(requestId) {
-        if (!this.port || !this.instanceId) {
-            await this.ensureConnected();
-        }
+    diagnose() { return this.serial(async () => ({ instanceId: await this.ensureConnected() })); }
 
-        const message = {
-            version: 1,
-            action: "GetRequestResult",
-            requestId: requestId,
-            extensionId: chrome.runtime.id || "aria2-explorer",
-            instanceId: this.instanceId
-        };
+    // Record the instance and sending intent durably BEFORE any AddDownload.
+    addDownload(requestId, payload, beforeSend) {
+        return this.serial(async () => {
+            const instanceId = await this.ensureConnected();
+            const message = { version: 1, action: 'AddDownload', requestId,
+                extensionId: chrome.runtime.id, instanceId, payload };
+            if (new TextEncoder().encode(JSON.stringify(message)).length > 65536) throw new Error('FrameTooLarge');
+            await beforeSend(instanceId);
+            return this.exchange(message);
+        });
+    }
 
-        return new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(() => {
-                this.pendingRequests.delete(requestId);
-                reject(new Error("Query timed out."));
-            }, 5000);
-
-            this.pendingRequests.set(requestId, {
-                resolve: (res) => {
-                    clearTimeout(timeoutId);
-                    this.pendingRequests.delete(requestId);
-                    resolve(res);
-                },
-                reject: (err) => {
-                    clearTimeout(timeoutId);
-                    this.pendingRequests.delete(requestId);
-                    reject(err);
-                }
-            });
-
-            try {
-                this.port.postMessage(message);
-            } catch (err) {
-                clearTimeout(timeoutId);
-                this.pendingRequests.delete(requestId);
-                reject(err);
-            }
+    queryResult(record) {
+        return this.serial(async () => {
+            const instanceId = await this.ensureConnected();
+            if (instanceId !== record.instanceId) return { status: 'InstanceMismatch' };
+            return this.exchange({ version: 1, action: 'GetRequestResult', requestId: record.requestId,
+                extensionId: chrome.runtime.id, instanceId: record.instanceId });
         });
     }
 }
