@@ -9,6 +9,10 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        native_aot: [false, true]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -24,7 +28,8 @@ jobs:
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
-        run: ./packaging/build_release_windows.ps1 -MsysPrefix "$env:MSYS2_LOCATION/ucrt64"
+          NATIVE_AOT: ${{ matrix.native_aot }}
+        run: ./packaging/build_release_windows.ps1 -MsysPrefix "$env:MSYS2_LOCATION/ucrt64" -NativeAot:($env:NATIVE_AOT -eq 'true')
       - name: Test native engine and actual host
         shell: pwsh
         run: |
@@ -34,5 +39,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
-          name: AriaUI-win-x64
+          name: AriaUI-win-x64-aot-${{ matrix.native_aot }}
           path: publish/win-x64/

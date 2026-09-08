@@ -25,6 +25,14 @@ dotnet build -c Release -r win-x64
 
 使用 `-NativeAot` 可请求 Native AOT 发布，需要额外安装 Visual Studio C++ 工具链。普通自包含发布不依赖 MSVC。
 
+Native AOT 建议发布到独立目录，避免混入普通自包含版本的旧文件：
+
+```powershell
+.\packaging\build_release_windows.ps1 -MsysPrefix C:\msys64\ucrt64 -NativeAot -OutputDirectory .\publish\win-x64-aot
+```
+
+安装 Visual Studio 2022 Build Tools 时选择“使用 C++ 的桌面开发”，包含 MSVC x64 工具与 Windows SDK。AOT 包仍需附带 libaria2、Avalonia 图形库等原生 DLL，不能只复制 EXE。桌面快捷方式的目标设为该目录下的 `AriaUI.exe`，起始位置设为该目录；浏览器宿主应从同一 AOT 目录重新注册，使两种入口使用同一版本。
+
 ## 数据和通信
 
 - 设置：保留现有 `%APPDATA%\AriaUI\config.json` 兼容行为。
@@ -61,5 +69,7 @@ dotnet run --project tests\AriaUI.Tests -c Release -r win-x64 -- --https
 ```
 
 Windows 测试入口使用真实引擎、临时目录和本地 HTTP 测试服务器，检查 DLL 加载、中文路径下载内容、命名管道、去重和结果查询、实例隔离、单实例锁、退出保存。设置 `ARIAUI_TEST_HOST` 为构建后的 `AriaUI.Host.exe` 绝对路径可额外验证真实宿主 stdio 桥接；`ARIAUI_TEST_DIR` 可指定测试文件目录。测试不修改真实浏览器注册项。
+
+2026-09-08 本地 Windows 10 x64 验证：.NET SDK 10.0.400、MSVC 14.44 和 Windows SDK 10.0.26100 完成主程序及宿主 Native AOT 发布。实际 AOT 主程序启动、网关创建下载及文件 SHA256 校验通过；使用 AOT 宿主和发布原生库的 8 组集成检查通过，包括开启证书校验的 HTTPS 下载。此结果不代替完整界面交互、各类网站下载及 Linux 实机回归。
 
 构建基础：[MSYS2 aria2 包](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-aria2)、[Native AOT 前置要求](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/)。原生依赖版本应在发布时记录并保留对应许可证和源码来源。
