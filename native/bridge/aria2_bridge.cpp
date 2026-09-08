@@ -8,11 +8,51 @@
 #include <chrono>
 #include <atomic>
 #include <memory>
+#include <thread>
+#include <stdexcept>
+#ifdef _WIN32
+#include <windows.h>
+#include <openssl/provider.h>
+#include <openssl/err.h>
+#else
 #include <unistd.h>
-#include <sys/syscall.h>
+#endif
 
-static pid_t get_current_tid() {
-    return (pid_t)syscall(SYS_gettid);
+static thread_local std::string g_init_error;
+#ifdef _WIN32
+static void configure_openssl_modules() {
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&configure_openssl_modules), &module))
+        throw std::runtime_error("Cannot locate the Windows bridge module");
+    std::vector<wchar_t> path(32768);
+    DWORD count = GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size()));
+    if (count == 0 || count >= path.size()) throw std::runtime_error("Cannot resolve the bridge path");
+    std::wstring directory(path.data(), count);
+    directory = directory.substr(0, directory.find_last_of(L"/\\")) + L"\\ossl-modules";
+    int size = WideCharToMultiByte(CP_UTF8, 0, directory.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (!size) throw std::runtime_error("Cannot encode the provider path");
+    std::vector<char> utf8(size);
+    WideCharToMultiByte(CP_UTF8, 0, directory.c_str(), -1, utf8.data(), size, nullptr, nullptr);
+    if (!OSSL_PROVIDER_set_default_search_path(nullptr, utf8.data()))
+        throw std::runtime_error("Cannot configure OpenSSL provider lookup");
+}
+#endif
+static bool file_exists_utf8(const char* path) {
+#ifdef _WIN32
+    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, nullptr, 0);
+    if (length == 0) return false;
+    std::vector<wchar_t> wide(length);
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide.data(), length)) return false;
+    auto attributes = GetFileAttributesW(wide.data());
+    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    return access(path, F_OK) == 0;
+#endif
+}
+
+static std::thread::id get_current_tid() {
+    return std::this_thread::get_id();
 }
 
 static std::atomic<int> g_active_session_count{0};
@@ -21,7 +61,7 @@ static bool g_library_initialized = false;
 
 struct BridgeSession {
     aria2::Session* aria2_session = nullptr;
-    pid_t owner_tid = 0;
+    std::thread::id owner_tid{};
     bool is_initialized = false;
     bool is_stopping = false;
     bool is_faulted = false;
@@ -91,7 +131,10 @@ uint32_t a2_bridge_get_abi_version(void) {
     return A2_ABI_VERSION;
 }
 
+const char* a2_bridge_get_last_error(void) { return g_init_error.c_str(); }
+
 int32_t a2_engine_init(const A2InitOptions* options, A2SessionHandle* out_session) {
+    g_init_error.clear();
     if (!options || !out_session) return A2_STATUS_INVALID_ARGUMENT;
     if (options->abi_version != A2_ABI_VERSION) return A2_STATUS_INVALID_ARGUMENT;
     if (options->struct_size != sizeof(A2InitOptions) && options->struct_size != 32) {
@@ -108,15 +151,25 @@ int32_t a2_engine_init(const A2InitOptions* options, A2SessionHandle* out_sessio
     try {
         std::lock_guard<std::mutex> lock(g_init_mutex);
         if (!g_library_initialized) {
+#ifdef _WIN32
+            configure_openssl_modules();
+#endif
             int r = aria2::libraryInit();
             if (r != 0) {
+                g_init_error = "aria2::libraryInit failed: " + std::to_string(r);
+#ifdef _WIN32
+                char message[256];
+                ERR_error_string_n(ERR_get_error(), message, sizeof(message));
+                g_init_error += std::string("; ") + message;
+#endif
                 g_active_session_count.fetch_sub(1);
                 return A2_STATUS_FATAL;
             }
             g_library_initialized = true;
         }
 
-        auto* s = new BridgeSession();
+        auto owner = std::unique_ptr<BridgeSession>(new BridgeSession());
+        auto* s = owner.get();
         s->owner_tid = get_current_tid();
 
         aria2::SessionConfig config;
@@ -130,7 +183,7 @@ int32_t a2_engine_init(const A2InitOptions* options, A2SessionHandle* out_sessio
             keyVals.emplace_back("dir", options->download_dir);
         }
         if (options->session_file && strlen(options->session_file) > 0) {
-            if (access(options->session_file, F_OK) == 0) {
+            if (file_exists_utf8(options->session_file)) {
                 keyVals.emplace_back("input-file", options->session_file);
             }
             keyVals.emplace_back("save-session", options->session_file);
@@ -145,15 +198,20 @@ int32_t a2_engine_init(const A2InitOptions* options, A2SessionHandle* out_sessio
 
         s->aria2_session = aria2::sessionNew(keyVals, config);
         if (!s->aria2_session) {
-            delete s;
+            g_init_error = "aria2::sessionNew returned null";
             g_active_session_count.fetch_sub(1);
             return A2_STATUS_ERROR;
         }
 
         s->is_initialized = true;
-        *out_session = s;
+        *out_session = owner.release();
         return A2_STATUS_OK;
+    } catch (const std::exception& ex) {
+        g_init_error = ex.what();
+        g_active_session_count.fetch_sub(1);
+        return A2_STATUS_FATAL;
     } catch (...) {
+        g_init_error = "Unknown exception during aria2 initialization";
         g_active_session_count.fetch_sub(1);
         return A2_STATUS_FATAL;
     }

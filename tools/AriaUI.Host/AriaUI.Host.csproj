@@ -7,4 +7,7 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Helpers/LocalGatewayEndpoint.cs" Link="LocalGatewayEndpoint.cs" />
+  </ItemGroup>
 </Project>

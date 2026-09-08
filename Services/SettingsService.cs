@@ -24,6 +24,15 @@ public class SettingsService : ISettingsService
 
     public SettingsService()
     {
+        // Explicit portable/test profile: keep settings, session and IPC discovery together.
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ARIAUI_DATA_DIR")))
+        {
+            var directory = AriaUI.Helpers.LocalGatewayEndpoint.DataDirectory;
+            Directory.CreateDirectory(directory);
+            _configFilePath = Path.Combine(directory, "config.json");
+            Load();
+            return;
+        }
         var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         if (string.IsNullOrWhiteSpace(appData))

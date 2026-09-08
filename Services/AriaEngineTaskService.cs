@@ -96,10 +96,7 @@ public class AriaEngineTaskService : IAriaTaskService
             var settings = _settingsService.Settings;
 
             // Resolve session file path under safe user config directory
-            var configDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".config",
-                "ariaui");
+            var configDir = AriaUI.Helpers.LocalGatewayEndpoint.DataDirectory;
             Directory.CreateDirectory(configDir);
             var sessionFilePath = Path.Combine(configDir, "aria2.session");
 
@@ -120,6 +117,9 @@ public class AriaEngineTaskService : IAriaTaskService
                 ["continue"] = "true",
                 ["enable-rpc"] = "false"
             };
+
+            if (OperatingSystem.IsWindows() && !settings.AllowInvalidCert)
+                initialOptions["ca-certificate"] = AriaUI.Helpers.WindowsCertificateBundle.ExportTrustedRoots(configDir);
 
             var startOptions = new EngineStartOptions
             {

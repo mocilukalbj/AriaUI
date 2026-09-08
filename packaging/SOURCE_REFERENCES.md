@@ -64,3 +64,16 @@ chmod +x packaging/build_release.sh
 ./packaging/build_release.sh
 ```
 构建脚本将自动验证、编译、打包并生成匹配的 SHA256 校验和。
+# Windows UCRT64 native dependencies
+
+Windows builds use MSYS2 UCRT64 packages for aria2 1.37.0 and its imported DLL dependencies.
+Build recipe: https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-aria2
+Source archive for the verified aria2 package revision 1.37.0-8:
+https://repo.msys2.org/mingw/sources/mingw-w64-aria2-1.37.0-8.src.tar.zst
+Upstream source: https://github.com/aria2/aria2/releases/tag/release-1.37.0
+Dependency package/source metadata: https://packages.msys2.org/
+Repository of dependency build recipes: https://github.com/msys2/MINGW-packages
+
+The Windows package includes the bridge source and upstream license notices.
+Before redistributing a release, retain the exact package/version manifest and the
+corresponding dependency source archives; package update revisions can change over time.

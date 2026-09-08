@@ -1,5 +1,7 @@
 # AriaUI - 跨平台 Aria2 下载管理器
 
+> `windows` 分支已切换为内嵌 libaria2，并补充 Windows x64 原生库与命名管道支持。Windows 构建、运行及浏览器宿主注册请以 [WINDOWS.md](WINDOWS.md) 为准。下方旧版 aria2c / WebSocket 说明保留作历史参考，不代表当前程序入口。
+
 <p align="center">
   <img src="Assets/avalonia-logo.ico" alt="AriaUI Logo" width="96" height="96" />
 </p>

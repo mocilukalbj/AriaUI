@@ -4,6 +4,16 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#if defined(_WIN32)
+#  if defined(ARIA2_BRIDGE_BUILD)
+#    define A2_API __declspec(dllexport)
+#  else
+#    define A2_API __declspec(dllimport)
+#  endif
+#else
+#  define A2_API __attribute__((visibility("default")))
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -85,18 +95,19 @@ typedef struct A2FileInfo {
 typedef void* A2SessionHandle;
 
 // ABI metadata
-uint32_t a2_bridge_get_abi_version(void);
+A2_API uint32_t a2_bridge_get_abi_version(void);
+A2_API const char* a2_bridge_get_last_error(void);
 
 // Lifecycle
-int32_t a2_engine_init(const A2InitOptions* options, A2SessionHandle* out_session);
-int32_t a2_engine_shutdown(A2SessionHandle session, int32_t force);
-int32_t a2_engine_destroy(A2SessionHandle session);
+A2_API int32_t a2_engine_init(const A2InitOptions* options, A2SessionHandle* out_session);
+A2_API int32_t a2_engine_shutdown(A2SessionHandle session, int32_t force);
+A2_API int32_t a2_engine_destroy(A2SessionHandle session);
 
 // Event loop step
-int32_t a2_engine_run_once(A2SessionHandle session);
+A2_API int32_t a2_engine_run_once(A2SessionHandle session);
 
 // Commands
-int32_t a2_download_add_uri(A2SessionHandle session,
+A2_API int32_t a2_download_add_uri(A2SessionHandle session,
                             const char* uri,
                             const char* const* headers,
                             uint32_t header_count,
@@ -104,7 +115,7 @@ int32_t a2_download_add_uri(A2SessionHandle session,
                             const char* out_filename,
                             uint64_t* out_gid);
 
-int32_t a2_download_add_uris(A2SessionHandle session,
+A2_API int32_t a2_download_add_uris(A2SessionHandle session,
                              const char* const* uris,
                              uint32_t uri_count,
                              const char* const* option_keys,
@@ -112,37 +123,37 @@ int32_t a2_download_add_uris(A2SessionHandle session,
                              uint32_t option_count,
                              uint64_t* out_gid);
 
-int32_t a2_download_add_torrent(A2SessionHandle session,
+A2_API int32_t a2_download_add_torrent(A2SessionHandle session,
                                 const char* torrent_file_path,
                                 const char* const* option_keys,
                                 const char* const* option_values,
                                 uint32_t option_count,
                                 uint64_t* out_gid);
 
-int32_t a2_download_pause(A2SessionHandle session, uint64_t gid, int32_t force);
-int32_t a2_download_unpause(A2SessionHandle session, uint64_t gid);
-int32_t a2_download_remove(A2SessionHandle session, uint64_t gid, int32_t force);
-int32_t a2_download_purge_results(A2SessionHandle session, uint32_t* out_purged_count);
+A2_API int32_t a2_download_pause(A2SessionHandle session, uint64_t gid, int32_t force);
+A2_API int32_t a2_download_unpause(A2SessionHandle session, uint64_t gid);
+A2_API int32_t a2_download_remove(A2SessionHandle session, uint64_t gid, int32_t force);
+A2_API int32_t a2_download_purge_results(A2SessionHandle session, uint32_t* out_purged_count);
 
 // Options
-int32_t a2_download_change_option(A2SessionHandle session,
+A2_API int32_t a2_download_change_option(A2SessionHandle session,
                                   uint64_t gid,
                                   const char* const* option_keys,
                                   const char* const* option_values,
                                   uint32_t option_count);
 
-int32_t a2_engine_change_global_option(A2SessionHandle session,
+A2_API int32_t a2_engine_change_global_option(A2SessionHandle session,
                                        const char* const* option_keys,
                                        const char* const* option_values,
                                        uint32_t option_count);
 
-int32_t a2_engine_get_global_option_value(A2SessionHandle session,
+A2_API int32_t a2_engine_get_global_option_value(A2SessionHandle session,
                                           const char* name,
                                           char* out_val,
                                           uint32_t val_buf_len,
                                           uint32_t* out_needed_len);
 
-int32_t a2_download_get_option_value(A2SessionHandle session,
+A2_API int32_t a2_download_get_option_value(A2SessionHandle session,
                                      uint64_t gid,
                                      const char* name,
                                      char* out_val,
@@ -150,20 +161,20 @@ int32_t a2_download_get_option_value(A2SessionHandle session,
                                      uint32_t* out_needed_len);
 
 // Task inspection
-int32_t a2_download_get_handle_info(A2SessionHandle session, uint64_t gid, A2TaskHandleInfo* out_info);
+A2_API int32_t a2_download_get_handle_info(A2SessionHandle session, uint64_t gid, A2TaskHandleInfo* out_info);
 
 // index=0 returns the download directory; other indices are aria2's 1-based files.
 // needed_len is UTF-8 bytes without a NUL. BUFFER_TOO_SMALL has no side effects.
-int32_t a2_download_get_file_info(A2SessionHandle session, uint64_t gid, uint32_t index,
+A2_API int32_t a2_download_get_file_info(A2SessionHandle session, uint64_t gid, uint32_t index,
     A2FileInfo* out_info, uint8_t* path, uint32_t capacity, uint32_t* needed_len);
 
 // Stats & Events
-int32_t a2_engine_get_global_stat(A2SessionHandle session, A2GlobalStat* out_stat);
-int32_t a2_engine_poll_events(A2SessionHandle session, A2EngineEvent* out_events, uint32_t max_events, uint32_t* out_count);
+A2_API int32_t a2_engine_get_global_stat(A2SessionHandle session, A2GlobalStat* out_stat);
+A2_API int32_t a2_engine_poll_events(A2SessionHandle session, A2EngineEvent* out_events, uint32_t max_events, uint32_t* out_count);
 
 // GID utilities
-void a2_gid_to_hex(uint64_t gid, char* out_hex_16);
-uint64_t a2_hex_to_gid(const char* hex_16);
+A2_API void a2_gid_to_hex(uint64_t gid, char* out_hex_16);
+A2_API uint64_t a2_hex_to_gid(const char* hex_16);
 
 #ifdef __cplusplus
 }

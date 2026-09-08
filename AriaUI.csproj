@@ -5,11 +5,13 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/avalonia-logo.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets/**" />
+    <None Update="Assets/avalonia-logo.ico" TargetPath="AriaUI.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="runtimes/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Compile Remove="tests/**" />
     <Compile Remove="tools/**" />
@@ -25,4 +27,8 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
     <PackageReference Include="Semi.Avalonia" Version="12.1.0.1" />
   </ItemGroup>
+  <Target Name="ValidateWindowsNativeRuntime" BeforeTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/runtimes/win-x64/native/aria2_bridge.dll')" Text="Build Windows native libraries first: packaging/build_native_windows.ps1" />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/runtimes/win-x64/native/ossl-modules/legacy.dll')" Text="OpenSSL legacy provider is missing from the Windows runtime package." />
+  </Target>
 </Project>

@@ -15,7 +15,7 @@ namespace AriaUI.Services.Engine;
 
 /// <summary>
 /// Native C ABI implementation of IAriaEngine (D02, D04, Section 2, Section 4).
-/// Manages libaria2 in-process via libaria2_bridge.so with a single owner thread.
+/// Manages libaria2 in-process via a platform-specific bridge with a single owner thread.
 /// </summary>
 public sealed class NativeAriaEngineHost : ITestHookableEngine
 {
@@ -88,6 +88,9 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
     {
         [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
         public static extern uint a2_bridge_get_abi_version();
+
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr a2_bridge_get_last_error();
 
         [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int a2_engine_init(ref A2InitOptions options, out IntPtr session);
@@ -206,55 +209,36 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
         lock (_resolverLock)
         {
             if (_nativeResolverConfigured) return;
-            _nativeResolverConfigured = true;
+            var rid = (OperatingSystem.IsWindows() ? "win-" : "linux-") +
+                RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant();
+            var libraryFile = OperatingSystem.IsWindows() ? "aria2_bridge.dll" : "libaria2_bridge.so";
+            var baseDir = AppContext.BaseDirectory;
+            var paths = new List<string>();
+            var configured = Environment.GetEnvironmentVariable("ARIAUI_NATIVE_DIR");
+            if (!string.IsNullOrWhiteSpace(configured)) paths.Add(Path.GetFullPath(configured));
+            paths.Add(Path.Combine(baseDir, "runtimes", rid, "native"));
+            paths.Add(baseDir);
+            var directory = new DirectoryInfo(baseDir);
+            for (int i = 0; i < 5 && directory != null; i++, directory = directory.Parent)
+                paths.Add(Path.Combine(directory.FullName, "runtimes", rid, "native"));
 
-            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            var searchPaths = new List<string>
+            NativeLibrary.SetDllImportResolver(typeof(NativeAriaEngineHost).Assembly, (name, assembly, _) =>
             {
-                baseDir,
-                Path.Combine(baseDir, "runtimes", "linux-x64", "native"),
-                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "runtimes", "linux-x64", "native")),
-                Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "..", "runtimes", "linux-x64", "native"))
-            };
-
-            foreach (var path in searchPaths)
-            {
-                var aria2Soname = Path.Combine(path, "libaria2.so.0");
-                if (File.Exists(aria2Soname))
+                if (name != LibName) return IntPtr.Zero;
+                foreach (var path in paths.Distinct())
                 {
-                    try { NativeLibrary.Load(aria2Soname); } catch { }
-                    break;
+                    var candidate = Path.Combine(path, libraryFile);
+                    if (!File.Exists(candidate)) continue;
+                    // DLL dependencies live alongside the bridge, without changing process PATH.
+                    return OperatingSystem.IsWindows()
+                        ? NativeLibrary.Load(candidate, assembly, DllImportSearchPath.UseDllDirectoryForDependencies | DllImportSearchPath.SafeDirectories)
+                        : NativeLibrary.Load(candidate);
                 }
-            }
-
-            foreach (var path in searchPaths)
-            {
-                var bridgePath = Path.Combine(path, "libaria2_bridge.so");
-                if (File.Exists(bridgePath))
-                {
-                    try { NativeLibrary.Load(bridgePath); } catch { }
-                    break;
-                }
-            }
-
-            NativeLibrary.SetDllImportResolver(typeof(NativeAriaEngineHost).Assembly, (libraryName, assembly, searchPath) =>
-            {
-                if (libraryName == "libaria2_bridge")
-                {
-                    foreach (var path in searchPaths)
-                    {
-                        var candidate = Path.Combine(path, "libaria2_bridge.so");
-                        if (File.Exists(candidate))
-                        {
-                            return NativeLibrary.Load(candidate);
-                        }
-                    }
-                }
-                return IntPtr.Zero;
+                return IntPtr.Zero; // Preserve the platform's default library search fallback.
             });
+            _nativeResolverConfigured = true;
         }
     }
-
     #endregion
 
     #region Command & Outcome Abstractions
@@ -654,7 +638,10 @@ public sealed class NativeAriaEngineHost : ITestHookableEngine
 
             if (initStatus != 0 || _nativeSession == IntPtr.Zero)
             {
-                throw new InvalidOperationException($"Native engine init failed with code {initStatus}");
+                string? detail;
+                try { detail = Marshal.PtrToStringUTF8(NativeBridge.a2_bridge_get_last_error()); }
+                catch (EntryPointNotFoundException) { detail = "Diagnostics unavailable in this older bridge."; }
+                throw new InvalidOperationException($"Native engine init failed with code {initStatus}: {detail}");
             }
 
             // Sync initial options into managed registry

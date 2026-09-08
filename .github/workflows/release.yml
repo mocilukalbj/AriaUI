@@ -36,7 +36,24 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev libfontconfig1-dev libice-dev libsm-dev libx11-dev libxext-dev
 
       - name: Publish Native AOT
+        if: runner.os == 'Linux'
         run: dotnet publish -r ${{ matrix.rid }} -c Release /p:PublishAot=true -o publish/${{ matrix.rid }}
+
+      - name: Setup Windows native dependencies
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-aria2
+
+      - name: Publish Windows Native AOT with download engine
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: ./packaging/build_release_windows.ps1 -MsysPrefix "$env:MSYS2_LOCATION/ucrt64" -NativeAot
 
       - name: Archive artifacts (Linux)
         if: runner.os == 'Linux'

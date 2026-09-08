@@ -2,6 +2,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipes;
+using AriaUI.Helpers;
 using System.Linq;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -209,6 +211,8 @@ public sealed class AppGatewayService : IAsyncDisposable
     private readonly string _lockFilePath;
 
     private Socket? _listenerSocket;
+    private NamedPipeServerStream? _listenerPipe;
+    private readonly ConcurrentDictionary<Stream, byte> _clientStreams = new();
     private FileStream? _lockFileStream;
     private Task? _acceptLoopTask;
     private readonly CancellationTokenSource _cts = new();
@@ -222,7 +226,8 @@ public sealed class AppGatewayService : IAsyncDisposable
 
     public string InstanceId => _instanceId;
     public string SocketPath => _socketPath;
-    public bool IsListening => _listenerSocket != null;
+    public bool IsListening => _listenerSocket != null || _listenerPipe != null;
+    public string PipeName => LocalGatewayEndpoint.PipeNameForLock(_lockFilePath);
 
     public AppGatewayService(
         IAriaTaskService taskService,
@@ -238,10 +243,7 @@ public sealed class AppGatewayService : IAsyncDisposable
 
         _instanceId = Guid.NewGuid().ToString("N");
 
-        var runtimeDir = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
-        var baseDir = !string.IsNullOrWhiteSpace(runtimeDir) && Directory.Exists(runtimeDir)
-            ? Path.Combine(runtimeDir, "ariaui")
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "ariaui");
+        var baseDir = LocalGatewayEndpoint.RuntimeDirectory;
 
         Directory.CreateDirectory(baseDir);
         if (OperatingSystem.IsLinux())
@@ -256,8 +258,9 @@ public sealed class AppGatewayService : IAsyncDisposable
             }
         }
 
-        _socketPath = socketPathOverride ?? Path.Combine(baseDir, "gateway.sock");
-        _lockFilePath = lockPathOverride ?? Path.Combine(baseDir, "ariaui.lock");
+        _socketPath = socketPathOverride ?? LocalGatewayEndpoint.SocketPath;
+        _lockFilePath = lockPathOverride ?? LocalGatewayEndpoint.LockPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(_lockFilePath)!);
 
         var effectiveDir = Path.GetDirectoryName(_socketPath);
         if (!string.IsNullOrWhiteSpace(effectiveDir))
@@ -309,6 +312,13 @@ public sealed class AppGatewayService : IAsyncDisposable
             throw new InvalidOperationException($"Another instance of AriaUI is already running (lock held at {_lockFilePath}).", ex);
         }
 
+        if (OperatingSystem.IsWindows())
+        {
+            _listenerPipe = CreateServerPipe();
+            _acceptLoopTask = AcceptPipeLoopAsync(_cts.Token);
+            return;
+        }
+
         // 2. Safely clean stale socket now that lock is held (including broken symlinks without following)
         try
         {
@@ -343,6 +353,56 @@ public sealed class AppGatewayService : IAsyncDisposable
         await Task.CompletedTask;
     }
 
+    private NamedPipeServerStream CreateServerPipe() => new(PipeName, PipeDirection.InOut,
+        NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
+        PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+
+    private async Task AcceptPipeLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested && _listenerPipe != null)
+        {
+            try
+            {
+                var pipe = _listenerPipe;
+                await pipe.WaitForConnectionAsync(cancellationToken);
+                _listenerPipe = CreateServerPipe();
+                _ = ServeClientAsync(pipe, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                if (cancellationToken.IsCancellationRequested) break;
+                Console.Error.WriteLine($"[AppGatewayService] Pipe accept failed: {ex.Message}");
+                _listenerPipe?.Dispose();
+                _listenerPipe = null;
+                break;
+            }
+        }
+    }
+
+    private async Task ServeClientAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var count = Interlocked.Increment(ref _activeConnections);
+        _clientStreams.TryAdd(stream, 0);
+        try
+        {
+            if (count > _runtimeConfig.MaxGatewayConnections)
+                await SendResponseAsync(stream, new GatewayResponse { Status = "QueueFull", Error = "Too many gateway connections." }, cancellationToken);
+            else
+                await HandleClientAsync(stream, cancellationToken);
+        }
+        catch (OperationCanceledException) { }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Console.Error.WriteLine($"[AppGatewayService] Client error: {ex.Message}"); }
+        finally
+        {
+            _clientStreams.TryRemove(stream, out _);
+            stream.Dispose();
+            Interlocked.Decrement(ref _activeConnections);
+        }
+    }
+
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested && _listenerSocket != null)
@@ -363,32 +423,7 @@ public sealed class AppGatewayService : IAsyncDisposable
                     continue;
                 }
 
-                // G04: Connection limit check (max 8)
-                if (Interlocked.Increment(ref _activeConnections) > _runtimeConfig.MaxGatewayConnections)
-                {
-                    Interlocked.Decrement(ref _activeConnections);
-                    Console.Error.WriteLine($"[AppGatewayService] Connection limit exceeded ({_runtimeConfig.MaxGatewayConnections}): connection rejected.");
-                    await SendResponseAsync(clientSocket, new GatewayResponse
-                    {
-                        Status = "QueueFull",
-                        Error = "Too many gateway connections."
-                    }, cancellationToken);
-                    clientSocket.Dispose();
-                    continue;
-                }
-
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await HandleClientAsync(clientSocket, cancellationToken);
-                    }
-                    finally
-                    {
-                        Interlocked.Decrement(ref _activeConnections);
-                        try { clientSocket.Dispose(); } catch { }
-                    }
-                }, cancellationToken);
+                _ = ServeClientAsync(new NetworkStream(clientSocket, ownsSocket: true), cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -402,14 +437,14 @@ public sealed class AppGatewayService : IAsyncDisposable
         }
     }
 
-    private async Task HandleClientAsync(Socket socket, CancellationToken cancellationToken)
+    private async Task HandleClientAsync(Stream networkStream, CancellationToken cancellationToken)
     {
-        var networkStream = new NetworkStream(socket, ownsSocket: false);
+
         int pendingRequestsOnConnection = 0;
         var sendLock = new SemaphoreSlim(1, 1);
         var inFlightTasks = new List<Task>();
 
-        while (!cancellationToken.IsCancellationRequested && socket.Connected)
+        while (!cancellationToken.IsCancellationRequested && networkStream.CanRead)
         {
             // Read 4-byte length prefix (Native Messaging little-endian format)
             byte[] lenBytes = new byte[4];
@@ -428,7 +463,7 @@ public sealed class AppGatewayService : IAsyncDisposable
                 await sendLock.WaitAsync(cancellationToken);
                 try
                 {
-                    await SendResponseAsync(socket, new GatewayResponse
+                    await SendResponseAsync(networkStream, new GatewayResponse
                     {
                         Status = "FrameTooLarge",
                         Error = $"Frame exceeds 64 KiB boundary ({frameLength} bytes)."
@@ -448,7 +483,7 @@ public sealed class AppGatewayService : IAsyncDisposable
                 await sendLock.WaitAsync(cancellationToken);
                 try
                 {
-                    await SendResponseAsync(socket, new GatewayResponse
+                    await SendResponseAsync(networkStream, new GatewayResponse
                     {
                         Status = "BadRequest",
                         Error = "Only 1 pending request per connection is allowed."
@@ -471,13 +506,18 @@ public sealed class AppGatewayService : IAsyncDisposable
 
             var processingTask = Task.Run(async () =>
             {
+                bool pendingReleased = false;
                 try
                 {
                     var response = await ProcessRequestAsync(framePayload, cancellationToken);
                     await sendLock.WaitAsync(cancellationToken);
                     try
                     {
-                        await SendResponseAsync(socket, response, cancellationToken);
+                        // Release admission before publishing the response: a client can send
+                        // its next frame immediately after reading it on another thread.
+                        Interlocked.Exchange(ref pendingRequestsOnConnection, 0);
+                        pendingReleased = true;
+                        await SendResponseAsync(networkStream, response, cancellationToken);
                     }
                     finally
                     {
@@ -490,10 +530,11 @@ public sealed class AppGatewayService : IAsyncDisposable
                 }
                 finally
                 {
-                    Interlocked.Exchange(ref pendingRequestsOnConnection, 0);
+                    if (!pendingReleased) Interlocked.Exchange(ref pendingRequestsOnConnection, 0);
                 }
             }, cancellationToken);
 
+            inFlightTasks.RemoveAll(task => task.IsCompleted);
             inFlightTasks.Add(processingTask);
         }
 
@@ -845,14 +886,14 @@ public sealed class AppGatewayService : IAsyncDisposable
         return totalRead;
     }
 
-    private static async Task SendResponseAsync(Socket socket, GatewayResponse response, CancellationToken cancellationToken)
+    private static async Task SendResponseAsync(Stream stream, GatewayResponse response, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(response, GatewayJsonContext.Default.GatewayResponse);
         var bytes = Encoding.UTF8.GetBytes(json);
         byte[] lenBytes = BitConverter.GetBytes((uint)bytes.Length);
 
-        await socket.SendAsync(lenBytes, SocketFlags.None, cancellationToken);
-        await socket.SendAsync(bytes, SocketFlags.None, cancellationToken);
+        await stream.WriteAsync(lenBytes, cancellationToken);
+        await stream.WriteAsync(bytes, cancellationToken);
     }
 
     public async ValueTask DisposeAsync()
@@ -860,6 +901,9 @@ public sealed class AppGatewayService : IAsyncDisposable
         if (Interlocked.Exchange(ref _isDisposed, 1) != 0) return;
 
         _cts.Cancel();
+        _listenerPipe?.Dispose();
+        _listenerPipe = null;
+        foreach (var stream in _clientStreams.Keys) stream.Dispose();
 
         if (_listenerSocket != null)
         {
@@ -868,7 +912,7 @@ public sealed class AppGatewayService : IAsyncDisposable
             _listenerSocket = null;
         }
 
-        if (File.Exists(_socketPath))
+        if (!OperatingSystem.IsWindows() && File.Exists(_socketPath))
         {
             try { File.Delete(_socketPath); } catch { }
         }

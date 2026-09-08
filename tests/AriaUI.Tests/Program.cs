@@ -20,6 +20,8 @@ public static class Program
         Console.WriteLine($"Runtime:   .NET {Environment.Version}");
         Console.WriteLine();
 
+        if (OperatingSystem.IsWindows()) return await WindowsPlatformTests.RunAsync(args);
+
         // Ensure native bridge and library are built and resolvable
         await Phase1NativeProbe.BuildNativeLibrariesAsync();
         NativeAriaEngineHost.ConfigureNativeResolution();
