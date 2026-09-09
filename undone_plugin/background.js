@@ -2,6 +2,7 @@ import { nativeClient } from './js/ariaui_native.js';
 import { defaults, validateSettings, captureSkipReason, makePayload } from './js/settings.js';
 import { RequestObserver } from './js/request_observer.js';
 import { HandoffManager } from './js/handoff.js';
+import { buildLinkContextPayload } from './js/context_menu.js';
 
 let settings = { ...defaults };
 const observer = new RequestObserver();
@@ -15,7 +16,9 @@ const manager = new HandoffManager(nativeClient, async record => {
 });
 
 const ready = (async () => {
-    await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+    if (chrome?.storage?.local?.setAccessLevel) {
+        await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).catch(() => {});
+    }
     const stored = await chrome.storage.local.get('companionSettings');
     if (stored.companionSettings) settings = validateSettings(stored.companionSettings);
     await manager.load();
@@ -39,11 +42,12 @@ async function updateBadge() {
 }
 
 async function menus() {
-    await chrome.contextMenus.removeAll();
-    // Match patterns do not support magnet:; validate links at the shared send entry.
-    chrome.contextMenus.create({ id: 'send-link', title: '直接用 AriaUI 下载链接', contexts: ['link'] });
-    chrome.contextMenus.create({ id: 'toggle', title: '自动接管下载', type: 'checkbox', checked: settings.enabled, contexts: ['action'] });
-    chrome.contextMenus.create({ id: 'settings', title: '设置与交接记录', contexts: ['action'] });
+    await chrome.contextMenus.removeAll().catch(() => {});
+    // Context menu entries: context-aware download (with Cookie/Referer) and plain send
+    chrome.contextMenus.create({ id: 'send-link-context', title: '用 AriaUI 下载（携带 Cookie / Referer）', contexts: ['link'] }, () => void chrome.runtime.lastError);
+    chrome.contextMenus.create({ id: 'send-link', title: '仅发送链接到 AriaUI', contexts: ['link'] }, () => void chrome.runtime.lastError);
+    chrome.contextMenus.create({ id: 'toggle', title: '自动接管下载', type: 'checkbox', checked: settings.enabled, contexts: ['action'] }, () => void chrome.runtime.lastError);
+    chrome.contextMenus.create({ id: 'settings', title: '设置与交接记录', contexts: ['action'] }, () => void chrome.runtime.lastError);
 }
 
 async function saveSettings(value) {
@@ -94,14 +98,47 @@ chrome.contextMenus.onClicked.addListener((info, tab) => guard((async () => {
     if (tab?.incognito) return;
     if (info.menuItemId === 'toggle') await saveSettings({ ...settings, enabled: info.checked });
     if (info.menuItemId === 'settings') await chrome.runtime.openOptionsPage();
-    if (info.menuItemId === 'send-link') {
-        // Explicit link sending creates a GET, without borrowing cookies from another context.
-        const record = await manager.manual(makePayload(info.linkUrl));
-        if (record.reason !== 'Sent') {
-            await chrome.notifications.create({ type: 'basic', iconUrl: 'images/logo128.png', title: 'AriaUI',
-                message: '发送未确认，请查看扩展交接记录。' });
+    if (info.menuItemId === 'send-link-context') {
+        try {
+            const payload = await buildLinkContextPayload(info, tab);
+            const record = await manager.manual(payload);
+            if (record.reason !== 'Sent') {
+                const hint = record.reason === 'NotSubmitted'
+                    ? '未提交到 AriaUI，请检查宿主连接及主程序运行状态。'
+                    : `发送未被接纳（${record.reason}），请查看扩展交接记录。`;
+                await chrome.notifications.create(`context-err:${record.requestId}`, {
+                    type: 'basic', iconUrl: 'images/logo128.png', title: 'AriaUI：任务未完成',
+                    message: hint
+                }).catch(() => {});
+            }
+            await updateBadge();
+        } catch (err) {
+            await chrome.notifications.create(`context-fail:${Date.now()}`, {
+                type: 'basic', iconUrl: 'images/logo128.png', title: 'AriaUI：无法发送链接',
+                message: err?.message || '构建下载凭据或发送失败。'
+            }).catch(() => {});
         }
-        await updateBadge();
+    }
+    if (info.menuItemId === 'send-link') {
+        try {
+            // Explicit link sending creates a GET, without borrowing cookies from another context.
+            const record = await manager.manual(makePayload(info.linkUrl));
+            if (record.reason !== 'Sent') {
+                const hint = record.reason === 'NotSubmitted'
+                    ? '未提交到 AriaUI，请检查宿主连接及主程序运行状态。'
+                    : `发送未被接纳（${record.reason}），请查看扩展交接记录。`;
+                await chrome.notifications.create(`link-err:${record.requestId}`, {
+                    type: 'basic', iconUrl: 'images/logo128.png', title: 'AriaUI：任务未完成',
+                    message: hint
+                }).catch(() => {});
+            }
+            await updateBadge();
+        } catch (err) {
+            await chrome.notifications.create(`link-fail:${Date.now()}`, {
+                type: 'basic', iconUrl: 'images/logo128.png', title: 'AriaUI：无法发送链接',
+                message: err?.message || '链接格式不支持。'
+            }).catch(() => {});
+        }
     }
 })()));
 
@@ -118,8 +155,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
             case 'resolve': await manager.resolve(message.requestId, message.decision); await updateBadge(); return {};
             default: throw new Error('UnknownAction');
         }
-    })().then(data => respond({ ok: true, ...data }), () => respond({ ok: false,
-        error: '操作未完成：请检查输入、宿主连接及交接记录；不要重复发送待确认任务。' }));
+    })().then(data => respond({ ok: true, ...data }), err => respond({ ok: false,
+        error: err?.message || '操作未完成：请检查输入、宿主连接及交接记录；不要重复发送待确认任务。' }));
     return true;
 });
 
@@ -128,6 +165,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
         observer.prune(); await manager.recover(); await updateBadge();
     }));
 });
+chrome.runtime.onInstalled?.addListener(() => guard(ready.then(menus)));
 guard(ready.then(async () => {
     await menus();
     await chrome.alarms.create('recover', { periodInMinutes: 1 });

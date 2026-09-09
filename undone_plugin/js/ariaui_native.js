@@ -48,7 +48,7 @@ export class AriaUINativeClient {
                 pending.resolve(message);
             });
             port.onDisconnect.addListener(() => {
-                void chrome.runtime.lastError;
+                void chrome?.runtime?.lastError;
                 if (this.port === port) this.disconnect();
             });
             const response = await this.exchange({ version: 1, action: 'Handshake' });
@@ -78,12 +78,31 @@ export class AriaUINativeClient {
         });
     }
 
-    diagnose() { return this.serial(async () => ({ instanceId: await this.ensureConnected() })); }
+    async liveConnection() {
+        // A native port can outlive the gateway's idle timeout. Probe before
+        // recording submission intent; retry only this side-effect-free handshake.
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                if (!this.port || !this.instanceId) return await this.ensureConnected();
+                const response = await this.exchange({ version: 1, action: 'Handshake' });
+                if (response.status !== 'Success' || typeof response.instanceId !== 'string' || !response.instanceId) {
+                    throw new Error('HandshakeRejected');
+                }
+                this.instanceId = response.instanceId;
+                return this.instanceId;
+            } catch (error) {
+                this.disconnect();
+                if (attempt === 1) throw error;
+            }
+        }
+    }
+
+    diagnose() { return this.serial(async () => ({ instanceId: await this.liveConnection() })); }
 
     // Record the instance and sending intent durably BEFORE any AddDownload.
     addDownload(requestId, payload, beforeSend) {
         return this.serial(async () => {
-            const instanceId = await this.ensureConnected();
+            const instanceId = await this.liveConnection();
             const message = { version: 1, action: 'AddDownload', requestId,
                 extensionId: chrome.runtime.id, instanceId, payload };
             if (new TextEncoder().encode(JSON.stringify(message)).length > 65536) throw new Error('FrameTooLarge');
@@ -94,7 +113,7 @@ export class AriaUINativeClient {
 
     queryResult(record) {
         return this.serial(async () => {
-            const instanceId = await this.ensureConnected();
+            const instanceId = await this.liveConnection();
             if (instanceId !== record.instanceId) return { status: 'InstanceMismatch' };
             return this.exchange({ version: 1, action: 'GetRequestResult', requestId: record.requestId,
                 extensionId: chrome.runtime.id, instanceId: record.instanceId });

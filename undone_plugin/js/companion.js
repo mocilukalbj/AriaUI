@@ -11,7 +11,8 @@ const reasons = { Sent: '已交给 AriaUI', NotSubmitted: '未提交，保留浏
     AcceptedBrowserItemMissing: 'AriaUI 已接纳，原浏览器记录已不存在', UserContinuedBrowser: '已选择继续浏览器',
     UserResolved: '已标记为处理完毕', QueueFull: 'AriaUI 队列已满，未接纳', RateLimited: '请求过于频繁，未接纳',
     BadRequest: '请求被拒绝', InvalidPath: '文件名或路径被拒绝', HeaderInjection: '请求头被拒绝',
-    UnsupportedScheme: '链接类型不支持', UnsupportedVersion: '协议版本不支持', UnsupportedAction: '操作不支持' };
+    UnsupportedScheme: '链接类型不支持', UnsupportedVersion: '协议版本不支持', UnsupportedAction: '操作不支持',
+    FrameTooLarge: '数据帧超出限制（64KB）' };
 
 async function rpc(message) {
     const result = await chrome.runtime.sendMessage(message);
@@ -19,11 +20,11 @@ async function rpc(message) {
     return result;
 }
 async function run(button, work) {
-    button.disabled = true;
+    if (button) button.disabled = true;
     $('feedback').textContent = '';
     try { await work(); }
     catch (error) { $('feedback').textContent = error.message; }
-    finally { button.disabled = false; }
+    finally { if (button) button.disabled = false; }
 }
 async function refresh(fillSettings = false) {
     const state = await rpc({ action: 'state' });
@@ -64,7 +65,8 @@ async function refresh(fillSettings = false) {
 }
 $('settings').addEventListener('submit', event => {
     event.preventDefault();
-    void run(event.submitter, async () => {
+    const btn = event.submitter || event.target.querySelector('button[type=submit]');
+    void run(btn, async () => {
         const value = { enabled: $('enabled').checked, captureUnknownSize: $('captureUnknownSize').checked, minMiB: Number($('minMiB').value) };
         for (const key of ruleKeys) value[key] = $(key).value.split(/[,\n，]/).map(s => s.trim()).filter(Boolean);
         await rpc({ action: 'settings', value }); $('feedback').textContent = '设置已保存。';
@@ -77,7 +79,8 @@ $('diagnose').addEventListener('click', event => run(event.target, async () => {
 }));
 $('send').addEventListener('submit', event => {
     event.preventDefault();
-    void run(event.submitter, async () => {
+    const btn = event.submitter || event.target.querySelector('button[type=submit]');
+    void run(btn, async () => {
         const response = await rpc({ action: 'send', url: $('url').value.trim() });
         $('url').value = '';
         $('feedback').textContent = reasons[response.record.reason] || '请查看交接记录，确认结果前不要重复发送。';

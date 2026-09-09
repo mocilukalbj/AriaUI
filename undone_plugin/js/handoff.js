@@ -1,7 +1,28 @@
 const PREFIX = 'handoff:';
 const NOT_ACCEPTED = new Set(['BadRequest', 'UnsupportedScheme', 'InvalidPath', 'HeaderInjection',
-    'RateLimited', 'QueueFull', 'UnsupportedVersion', 'UnsupportedAction', 'InstanceMismatch']);
+    'RateLimited', 'QueueFull', 'UnsupportedVersion', 'UnsupportedAction', 'InstanceMismatch', 'FrameTooLarge']);
 export const validGid = gid => typeof gid === 'string' && /^[0-9a-f]{16}$/i.test(gid) && !/^0{16}$/.test(gid);
+
+export function deriveLabel(payload) {
+    if (payload?.out) return payload.out.slice(0, 160);
+    if (payload?.url) {
+        try {
+            const u = new URL(payload.url);
+            if (u.protocol === 'magnet:') {
+                const dn = u.searchParams.get('dn');
+                if (dn) return dn.slice(0, 160);
+                const xt = u.searchParams.get('xt') || '';
+                return ('magnet:' + xt.slice(0, 40)).slice(0, 160);
+            }
+            const name = u.pathname.replace(/\/+$/, '').split(/[\\/]/).pop();
+            if (name && name !== '.' && name !== '..') {
+                try { return decodeURIComponent(name).slice(0, 160); } catch { return name.slice(0, 160); }
+            }
+            return u.hostname.slice(0, 160);
+        } catch {}
+    }
+    return '手动发送';
+}
 
 export class HandoffManager {
     constructor(client, notify = async () => {}) {
@@ -32,15 +53,17 @@ export class HandoffManager {
         Object.assign(record, next);
         this.records.set(record.requestId, record);
     }
-    async create(item) {
+    async create(item, label = null) {
         if ([...this.records.values()].filter(r => r.stage !== 'done').length >= 100) throw new Error('TooManyUnresolved');
         const record = { version: 1, requestId: crypto.randomUUID(), stage: 'prepared',
             created: Date.now(), attempts: 0 };
         if (item) {
             record.downloadId = item.id;
             record.startTime = item.startTime;
-            record.label = (item.filename || '').split(/[\\/]/).pop().slice(0, 160);
-        } else record.label = '手动发送';
+            record.label = (label || deriveLabel({ out: item.filename, url: item.finalUrl || item.url })).slice(0, 160) || '浏览器下载';
+        } else {
+            record.label = (label || '手动发送').slice(0, 160);
+        }
         await this.save(record);
         return record;
     }
@@ -51,6 +74,13 @@ export class HandoffManager {
     }
     async attention(record, reason) {
         await this.save(record, { stage: 'attention', reason });
+        await this.notifyOnce(record);
+    }
+    async notifyOnce(record) {
+        if (record.attentionNotified) return;
+        // Persist before notifying so worker restarts and recovery queries do not
+        // repeat the same alert. The unresolved record and badge remain visible.
+        await this.save(record, { attentionNotified: true });
         await this.notify(record);
     }
     async resume(record, reason) {
@@ -97,7 +127,7 @@ export class HandoffManager {
         // Failed in the existing gateway includes generic exceptions: treat as unknown.
         if (!isQuery && NOT_ACCEPTED.has(response?.status)) return this.resume(record, response.status);
         await this.save(record, { stage: 'unknown', reason: response?.status || 'UnknownOutcome' });
-        await this.notify(record);
+        await this.notifyOnce(record);
     }
     async send(record, payload) {
         try {
@@ -137,8 +167,9 @@ export class HandoffManager {
             await this.send(record, payload);
         } finally { this.busy.delete(record.requestId); }
     }
-    async manual(payload) {
-        const record = await this.create();
+    async manual(payload, label = null) {
+        const recordLabel = label || deriveLabel(payload);
+        const record = await this.create(null, recordLabel);
         this.busy.add(record.requestId);
         try { await this.send(record, payload); return record; }
         finally { this.busy.delete(record.requestId); }
